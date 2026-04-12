@@ -5,7 +5,30 @@ Solution repository for the [AI for Industry Challenge](https://github.com/intri
 > **Note:** This repo contains only our solution code. For the full toolkit and setup instructions, follow the [official getting started guide](https://github.com/intrinsic-dev/aic/blob/main/docs/getting_started.md) first.
 
 ---
+## Setup aic_solution_policy package
 
+1. Add the following line to /ws_aic/src/aic/pixi.toml under [dependencies]
+```bash
+ros-kilted-aic-solution-policy = { path = "aic_solution/aic_solution_policy" }
+```
+
+2. Install
+```bash
+cd ~/ws_aic/src/aic
+pixi reinstall ros-kilted-aic-solution-policy
+```
+3. Test with WaveArm policy by opening a second terminal and run: 
+```bash
+cd ~/ws_aic/src/aic
+pixi run ros2 run aic_model aic_model --ros-args -p use_sim_time:=true -p policy:=aic_solution_policy.WaveArm
+```
+### Bugfixes
+If the reinstall fails try to delete the /ws_aic/src/aic/.pixi folder and than reinstall everthing
+``` bash
+cd ~/ws_aic/src/aic
+rm -rf .pixi
+pixi install
+```
 ## Helpful Commands
 
 ### Enter the Evaluation Container
