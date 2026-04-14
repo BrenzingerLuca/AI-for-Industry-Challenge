@@ -20,9 +20,13 @@ from aic_model.policy import (
     Policy,
     SendFeedbackCallback,
 )
+from aic_solution_policy.VectorHelpers import (
+    compute_tcp_target_pose,
+    lookup_pose_in_base,
+)
+from aic_solution_policy.RVizHelpers import rviz_vector
 from aic_task_interfaces.msg import Task
 from geometry_msgs.msg import Point, Pose, Quaternion, WrenchStamped
-from rclpy.duration import Duration
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 
@@ -30,24 +34,31 @@ from rclpy.time import Time
 class Plug_in(Policy):
     def __init__(self, parent_node):
         super().__init__(parent_node)
+
+        # Laufzeitstatus fuer Monitoring/Debug-Ausgaben.
         self.get_logger().info("Plug_in.__init__(): subscribe to /fts_broadcaster/wrench")
         self._last_wrench = None
         self._num_wrench_msgs = 0
         self._last_constant_error_base = None
 
+        # Zuverlaessige QoS fuer Kraftsensor-Nachrichten.
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=50,
         )
+
+        # Subscriber fuer aktuelle Kraft-/Momentdaten am Tool.
         self._wrench_sub = self._parent_node.create_subscription(
             WrenchStamped,
             "/fts_broadcaster/wrench",
             self._on_wrench,
             qos,
         )
-        self._display_timer = self._parent_node.create_timer(0.25, self._display_tick)
+
+        # Periodische Diagnoseausgabe fuer Wrench und Positionsfehler.
+        #self._display_timer = self._parent_node.create_timer(0.5, self._display_tick)
 
     def _on_wrench(self, msg: WrenchStamped):
         """Silently store the latest wrench message."""
@@ -76,41 +87,6 @@ class Plug_in(Policy):
                 f"x={dx:.4f}, y={dy:.4f}, z={dz:.4f}"
             )
 
-    def _lookup_base_pose(self, frame_id: str):
-        transform = self._parent_node._tf_buffer.lookup_transform(
-            "base_link",
-            frame_id,
-            Time(),
-        )
-        translation = transform.transform.translation
-        rotation = transform.transform.rotation
-        return translation, rotation
-
-    def _rotate_vector_by_quaternion(self, quaternion, vector):
-        qx = quaternion.x
-        qy = quaternion.y
-        qz = quaternion.z
-        qw = quaternion.w
-        vx, vy, vz = vector
-
-        ix = qw * vx + qy * vz - qz * vy
-        iy = qw * vy + qz * vx - qx * vz
-        iz = qw * vz + qx * vy - qy * vx
-        iw = -qx * vx - qy * vy - qz * vz
-
-        ox = ix * qw + iw * -qx + iy * -qz - iz * -qy
-        oy = iy * qw + iw * -qy + iz * -qx - ix * -qz
-        oz = iz * qw + iw * -qz + ix * -qy - iy * -qx
-        return ox, oy, oz
-
-    def _quaternion_multiply(self, q1, q2):
-        return Quaternion(
-            x=q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y,
-            y=q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x,
-            z=q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w,
-            w=q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z,
-        )
-
     def insert_cable(
         self,
         task: Task,
@@ -125,62 +101,91 @@ class Plug_in(Policy):
 
         try:
             while True:
+                # Zyklisch arbeiten, um TF und Sensorik ruhig nachzufuehren.
                 self.sleep_for(0.25)
-                entrance_pos, entrance_rot = self._lookup_base_pose(
-                    "task_board/nic_card_mount_0/sfp_port_0_link_entrance"
+
+                # Entrance-Pose in base_link fuer Sollausrichtung laden.
+                entrance_pos, entrance_rot = lookup_pose_in_base(
+                    self._parent_node._tf_buffer,
+                    "task_board/nic_card_mount_0/sfp_port_0_link_entrance",
                 )
-                tip_pos, _ = self._lookup_base_pose("cable_0/sfp_tip_link")
-                tcp_in_tip = self._parent_node._tf_buffer.lookup_transform(
+
+                tip_pos, tip_rot = lookup_pose_in_base(
+                    self._parent_node._tf_buffer,
+                    "cable_0/sfp_tip_link",
+                )
+
+                tip_from_tcp = self._parent_node._tf_buffer.lookup_transform(
                     "cable_0/sfp_tip_link",
                     "gripper/tcp",
                     Time(),
                 )
 
-                # Constant error between entrance and tip in base_link.
+                target_pose_in_base = compute_tcp_target_pose(
+                    entrance_pos,
+                    entrance_rot,
+                    tip_from_tcp,
+                )
+
+                rviz_vector(self._parent_node, target_pose_in_base, color="green")
+                rviz_vector(
+                    self._parent_node,
+                    Pose(
+                        position=Point(x=tip_pos.x, y=tip_pos.y, z=tip_pos.z),
+                        orientation=Quaternion(
+                            x=tip_rot.x,
+                            y=tip_rot.y,
+                            z=tip_rot.z,
+                            w=tip_rot.w,
+                        ),
+                    ),
+                    color="cyan",
+                )
+
+                tcp_pos, tcp_rot = lookup_pose_in_base(
+                    self._parent_node._tf_buffer,
+                    "gripper/tcp",
+                )
+
+                tcp_in_base = Pose(
+                    position=Point(
+                        x=tcp_pos.x,
+                        y=tcp_pos.y,
+                        z=tcp_pos.z,
+                    ),
+                    orientation=Quaternion(
+                        x=tcp_rot.x,
+                        y=tcp_rot.y,
+                        z=tcp_rot.z,
+                        w=tcp_rot.w,
+                    ),
+                )
+
+                # Error between desired entrance pose and actual tip pose in base_link.
                 err_x = entrance_pos.x - tip_pos.x
                 err_y = entrance_pos.y - tip_pos.y
                 err_z = entrance_pos.z - tip_pos.z
                 self._last_constant_error_base = (err_x, err_y, err_z)
 
-                # Use the entrance orientation as the desired tip orientation.
-                desired_tip_rotation = entrance_rot
-
-                # lookup_transform("cable_0/sfp_tip_link", "gripper/tcp") returns T_tip_tcp.
-                tip_from_tcp_t = tcp_in_tip.transform.translation
-                tip_from_tcp_q = tcp_in_tip.transform.rotation
-
-                offset_base_x, offset_base_y, offset_base_z = self._rotate_vector_by_quaternion(
-                    desired_tip_rotation,
-                    (tip_from_tcp_t.x, tip_from_tcp_t.y, tip_from_tcp_t.z),
-                )
-                target_rotation = self._quaternion_multiply(desired_tip_rotation, tip_from_tcp_q)
-
-                target_pose = Pose(
-                    position=Point(
-                        x=entrance_pos.x + offset_base_x,
-                        y=entrance_pos.y + offset_base_y,
-                        z=entrance_pos.z + offset_base_z,
-                    ),
-                    orientation=Quaternion(
-                        x=target_rotation.x,
-                        y=target_rotation.y,
-                        z=target_rotation.z,
-                        w=target_rotation.w,
-                    ),
-                )
+                # Correct Target Pose with TCP Offset x=-0.0016, y=0.0010, z=-0.1073 (Not sure from where the offset is coming
+                target_pose_in_base.position.x -= 0.0016
+                target_pose_in_base.position.y += 0.0010
+                target_pose_in_base.position.z -= 0.1073
 
                 # Command the TCP pose so that the tip sits exactly on the entrance pose.
-                self.set_pose_target(move_robot=move_robot, pose=target_pose, frame_id="base_link")
+                self.set_pose_target(move_robot=move_robot, pose=target_pose_in_base, frame_id="base_link")
 
                 self.get_logger().info(
-                    "entrance(base_link) | "
+                    "entrance_pose(base_link) | "
                     f"x={entrance_pos.x:.4f}, y={entrance_pos.y:.4f}, z={entrance_pos.z:.4f} | "
-                    "tip(base_link) | "
-                    f"x={tip_pos.x:.4f}, y={tip_pos.y:.4f}, z={tip_pos.z:.4f} | "
-                    "tip_error(base_link) | "
+                    "tip error(base_link) | "
                     f"x={err_x:.4f}, y={err_y:.4f}, z={err_z:.4f} | "
-                    "tcp_target(base_link) | "
-                    f"x={target_pose.position.x:.4f}, y={target_pose.position.y:.4f}, z={target_pose.position.z:.4f}"
+                    "target_tcp_pose(base_link) | "
+                    f"x={target_pose_in_base.position.x:.4f}, y={target_pose_in_base.position.y:.4f}, z={target_pose_in_base.position.z:.4f} | "
+                    "tcp(base_link) | "
+                    f"x={tcp_in_base.position.x:.4f}, y={tcp_in_base.position.y:.4f}, z={tcp_in_base.position.z:.4f} | "
+                    "tip(base_link) | "
+                    f"x={tip_pos.x:.4f}, y={tip_pos.y:.4f}, z={tip_pos.z:.4f}"
                 )
 
                 observation = get_observation()
