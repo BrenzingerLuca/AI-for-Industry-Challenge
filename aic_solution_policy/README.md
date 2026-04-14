@@ -47,8 +47,3 @@ exit
 pixi reinstall ros-kilted-aic-solution-policy
 ```
 than again all steps from Terminal 3.
-
-
-
-
-
