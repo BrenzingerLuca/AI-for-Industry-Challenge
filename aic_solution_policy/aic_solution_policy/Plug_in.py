@@ -14,6 +14,8 @@
 #  limitations under the License.
 #
 
+from pathlib import Path
+
 from aic_model.policy import (
     GetObservationCallback,
     MoveRobotCallback,
@@ -25,6 +27,7 @@ from aic_solution_policy.VectorHelpers import (
     lookup_pose_in_base,
 )
 from aic_solution_policy.RVizHelpers import rviz_vector
+from aic_solution_policy.ForceFeedbackHelpers import ForceFeedbackHelper
 from aic_task_interfaces.msg import Task
 from geometry_msgs.msg import Point, Pose, Quaternion, WrenchStamped
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -38,8 +41,8 @@ class Plug_in(Policy):
         # Laufzeitstatus fuer Monitoring/Debug-Ausgaben.
         self.get_logger().info("Plug_in.__init__(): subscribe to /fts_broadcaster/wrench")
         self._last_wrench = None
-        self._num_wrench_msgs = 0
         self._last_constant_error_base = None
+        self._force_feedback = ForceFeedbackHelper(self.get_logger())
 
         # Zuverlaessige QoS fuer Kraftsensor-Nachrichten.
         qos = QoSProfile(
@@ -53,28 +56,25 @@ class Plug_in(Policy):
         self._wrench_sub = self._parent_node.create_subscription(
             WrenchStamped,
             "/fts_broadcaster/wrench",
-            self._on_wrench,
+            self._force_feedback.on_wrench,
             qos,
         )
 
         # Periodische Diagnoseausgabe fuer Wrench und Positionsfehler.
-        #self._display_timer = self._parent_node.create_timer(0.5, self._display_tick)
-
-    def _on_wrench(self, msg: WrenchStamped):
-        """Silently store the latest wrench message."""
-        self._last_wrench = msg
-        self._num_wrench_msgs += 1
+        self._display_timer = self._parent_node.create_timer(0.5, self._display_tick)
+        self._force_stream_timer = self._parent_node.create_timer(0.1, self._force_stream_tick)
 
     def _display_tick(self):
         """Display wrench and constant entrance-tip error at 4 Hz."""
-        if self._last_wrench is not None:
+        last_wrench = self._force_feedback.get_last_wrench()
+        if last_wrench is not None:
             self.get_logger().info(
                 "wrench | force: "
-                f"x={self._last_wrench.wrench.force.x:.3f}, y={self._last_wrench.wrench.force.y:.3f}, z={self._last_wrench.wrench.force.z:.3f} "
+                f"x={last_wrench.wrench.force.x:.3f}, y={last_wrench.wrench.force.y:.3f}, z={last_wrench.wrench.force.z:.3f} "
                 "| torque: "
-                f"x={self._last_wrench.wrench.torque.x:.3f}, y={self._last_wrench.wrench.torque.y:.3f}, z={self._last_wrench.wrench.torque.z:.3f}"
+                f"x={last_wrench.wrench.torque.x:.3f}, y={last_wrench.wrench.torque.y:.3f}, z={last_wrench.wrench.torque.z:.3f}"
             )
-        elif self._num_wrench_msgs == 0:
+        elif self._force_feedback.get_num_wrench_msgs() == 0:
             count = self._parent_node.count_publishers("/fts_broadcaster/wrench")
             self.get_logger().warn(
                 f"No wrench messages received yet. Publishers on /fts_broadcaster/wrench: {count}"
@@ -87,51 +87,29 @@ class Plug_in(Policy):
                 f"x={dx:.4f}, y={dy:.4f}, z={dz:.4f}"
             )
 
-    def get_force_feedback(self, time_window=0.1):
-        """Returns the force and torque delta over last 0.1s as a tuple: (force: (x, y, z), torque: (x, y, z)). 
-        If no wrench message has been received yet, returns ((0, 0, 0), (0, 0, 0))."""
-        if self._last_wrench is not None:
-            current_forces = (
-                (self._last_wrench.wrench.force.x,
-                self._last_wrench.wrench.force.y, 
-                self._last_wrench.wrench.force.z),
-                (self._last_wrench.wrench.torque.x,
-                self._last_wrench.wrench.torque.y, 
-                self._last_wrench.wrench.torque.z)
-            )
-            
-            # Store forces with timestamp for comparison over the configured window.
-            stamp = self._last_wrench.header.stamp
-            current_time_s = float(stamp.sec) + float(stamp.nanosec) * 1e-9
-            if not hasattr(self, '_force_history'):
-                self._force_history = []
-            
-            self._force_history.append((current_time_s, current_forces))
-            
-            # Keep only forces from the last configured time window.
-            cutoff_time_s = current_time_s - time_window
-            self._force_history = [(t, f) for t, f in self._force_history if t >= cutoff_time_s]
-            
-            if len(self._force_history) > 1:
-                earlier_forces = self._force_history[0][1]
-                delta_forces = (
-                    (current_forces[0][0] - earlier_forces[0][0],
-                    current_forces[0][1] - earlier_forces[0][1],
-                    current_forces[0][2] - earlier_forces[0][2]),
-                    (current_forces[1][0] - earlier_forces[1][0],
-                    current_forces[1][1] - earlier_forces[1][1],
-                    current_forces[1][2] - earlier_forces[1][2])
-                )
-            
-                # Calculate the gradient from current forces to the earlier_forces
-                forces_gradient = (
-                    (delta_forces[0][0] / time_window, delta_forces[0][1] / time_window, delta_forces[0][2] / time_window),
-                    (delta_forces[1][0] / time_window, delta_forces[1][1] / time_window, delta_forces[1][2] / time_window)
-                )
-                return delta_forces, forces_gradient
-        
-        return ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)), ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
-    
+    def _force_stream_tick(self):
+        """Stream force feedback while an insert operation is running."""
+        feedback = self._force_feedback.stream_tick(time_window=0.1)
+        if feedback is None:
+            return
+
+        delta_forces, forces_gradient, abs_forces = feedback
+        self.get_logger().info(
+            f"Abs force/torque: "
+            f"force: x={abs_forces[0][0]:.3f}, y={abs_forces[0][1]:.3f}, z={abs_forces[0][2]:.3f} | "
+            f"torque: x={abs_forces[1][0]:.3f}, y={abs_forces[1][1]:.3f}, z={abs_forces[1][2]:.3f}"
+        )
+        self.get_logger().info(
+            f"Force delta over last 0.1s: "
+            f"force: x={delta_forces[0][0]:.3f}, y={delta_forces[0][1]:.3f}, z={delta_forces[0][2]:.3f} | "
+            f"torque: x={delta_forces[1][0]:.3f}, y={delta_forces[1][1]:.3f}, z={delta_forces[1][2]:.3f}"
+        )
+        self.get_logger().info(
+            f"Force gradient over last 0.1s: "
+            f"force: x={forces_gradient[0][0]:.3f}, y={forces_gradient[0][1]:.3f}, z={forces_gradient[0][2]:.3f} | "
+            f"torque: x={forces_gradient[1][0]:.3f}, y={forces_gradient[1][1]:.3f}, z={forces_gradient[1][2]:.3f}"
+        )
+
     def set_my_target_pose(self, move_robot: MoveRobotCallback,
                             pose: Pose,
                             offset_x= 0.0,
@@ -140,7 +118,7 @@ class Plug_in(Policy):
                             frame_id="base_link"):
         """Set the target pose for the robot, with an optional offset."""
 
-        # Correct Target Pose with TCP Offset x=-0.0016, y=0.0010, z=-0.1073 (Not sure from where the offset is coming
+        # Correct Target Pose with TCP Offset x=-0.0016, y=0.0010, z=-0.1073 (Not sure from where the offset is coming from)
         pose.position.x -= 0.0016 + offset_x
         pose.position.y += 0.0010 + offset_y
         pose.position.z -= 0.1073 + offset_z
@@ -223,6 +201,7 @@ class Plug_in(Policy):
                             frame_id="base_link")
 
         # If the error is small enough, we can consider the cable to be successfully aligned with the entrance.
+        self.sleep_for(1.0)
         if abs(err_x) < 0.005 and abs(err_y) < 0.005 and abs(err_z) < 0.005:
             self.get_logger().info("Cable tip is well aligned with entrance (error < 5mm).")
             return True
@@ -232,7 +211,7 @@ class Plug_in(Policy):
             )
             return False
 
-    def pluig_in(self, target_pos_in_base_link, target_rot_in_base_link, move_robot):
+    def plug_in(self, target_pos_in_base_link, target_rot_in_base_link, move_robot):
         """Insert the cable by moving the TCP so that the tip sits on the target pose.
 
         Args:
@@ -308,6 +287,7 @@ class Plug_in(Policy):
                             frame_id="base_link")
 
         # If the error is small enough, we can consider the cable to be successfully aligned with the entrance.
+        self.sleep_for(3.0) 
         if abs(err_x) < 0.005 and abs(err_y) < 0.005 and abs(err_z) < 0.005:
             return True
         else:
@@ -324,9 +304,20 @@ class Plug_in(Policy):
 
         self.get_logger().info("Plug_in.insert_cable() enter: aligning tip to entrance")
         send_feedback("Aligning cable tip to socket entrance")
+        max_alignment_attempts = 20
+        max_insertion_attempts = 30
+        alignment_attempts = 0
+        insertion_attempts = 0
+        aligned_once = False
 
         try:
-            while True:
+            # Prefer workspace-local logging directory used by this repository layout.
+            data_dir = Path.cwd() / "aic_solution" / "aic_solution_policy" / "data"
+            if not data_dir.parent.exists():
+                data_dir = Path(__file__).resolve().parents[1] / "data"
+            self._force_feedback.start_csv_logging(data_dir)
+            self._force_feedback.set_stream_active(True)
+            while insertion_attempts < max_insertion_attempts:
                 # Zyklisch arbeiten, um TF und Sensorik ruhig nachzufuehren.
                 self.sleep_for(0.25)
 
@@ -334,21 +325,9 @@ class Plug_in(Policy):
                 Workflow:
                 1) KeyPoint Prediction
                 2) Triangulation -> Returns TF in base_link
-                3) Call plug_in(target_pose_in_base_link)
+                3) Call Allingnment
+                4) Call plug_in(target_pose_in_base_link)
                 '''
-
-                # Print force delta and gradient for debugging/monitoring.
-                delta_forces, forces_gradient = self.get_force_feedback(time_window=0.5)
-                self.get_logger().info(
-                    f"Force delta over last 0.5s: "
-                    f"force: x={delta_forces[0][0]:.3f}, y={delta_forces[0][1]:.3f}, z={delta_forces[0][2]:.3f} | "
-                    f"torque: x={delta_forces[1][0]:.3f}, y={delta_forces[1][1]:.3f}, z={delta_forces[1][2]:.3f}"
-                )
-                self.get_logger().info(
-                    f"Force gradient over last 0.5s: "
-                    f"force: x={forces_gradient[0][0]:.3f}, y={forces_gradient[0][1]:.3f}, z={forces_gradient[0][2]:.3f} | "
-                    f"torque: x={forces_gradient[1][0]:.3f}, y={forces_gradient[1][1]:.3f}, z={forces_gradient[1][2]:.3f}"
-                )
 
                 # Entrance-Pose in base_link fuer Sollausrichtung laden.
                 entrance_pos, entrance_rot = lookup_pose_in_base(
@@ -356,43 +335,69 @@ class Plug_in(Policy):
                     "task_board/nic_card_mount_0/sfp_port_0_link_entrance",
                 )
 
-                aligned = self.allign_connector(entrance_pos, entrance_rot, move_robot)
+                # Calculatet 7-cm z to entrance 
+                entrance_pos_offset = Point(
+                    x=entrance_pos.x,
+                    y=entrance_pos.y,
+                    z=entrance_pos.z + 0.01
+                )
+                entrance_rot_offset = entrance_rot
 
+                if not aligned_once:
+                    alignment_attempts += 1
+                    aligned_once = self.allign_connector(entrance_pos_offset, entrance_rot_offset, move_robot)
+                    if aligned_once:
+                        self.get_logger().info("Cable tip aligned with entrance, start insertion phase.")
+                        send_feedback("Cable tip aligned, inserting cable...")
+                    elif alignment_attempts >= max_alignment_attempts:
+                        self.get_logger().warn("Alignment failed too often, aborting insert_cable().")
+                        send_feedback("Alignment failed too often.")
+                        return False
+                    else:
+                        self.get_logger().warn("Cable tip is not aligned with entrance, retrying alignment.")
+                        send_feedback("Cable tip not aligned, retrying alignment...")
+                    continue
 
                 # Calculatet 7-cm z to entrance 
                 target_pos_in_base_link = Point(
                     x=entrance_pos.x,
                     y=entrance_pos.y,
-                    z=entrance_pos.z - 0.07
+                    z=entrance_pos.z - 0.05
                 )
                 target_rot_in_base_link = entrance_rot
 
-                if aligned:
-                    self.get_logger().info("Cable tip is aligned with entrance, proceeding to insert.")
-                    send_feedback("Cable tip aligned, inserting cable...")
-                    inserted = self.pluig_in(target_pos_in_base_link, target_rot_in_base_link, move_robot)
-                    if inserted:
-                        self.get_logger().info("Cable successfully inserted.")
-                        send_feedback("Cable successfully inserted.")
-                        break
-                    else:
-                        self.get_logger().warn("Cable insertion failed, retrying alignment.")
-                        send_feedback("Cable insertion failed, retrying alignment...")
+                insertion_attempts += 1
+                inserted = self.plug_in(target_pos_in_base_link, target_rot_in_base_link, move_robot)
+                if inserted:
+                    self.get_logger().info("Cable successfully inserted.")
+                    send_feedback("Cable successfully inserted.")
+                    break
                 else:
-                    self.get_logger().warn("Cable tip is not aligned with entrance, retrying.")
-                    send_feedback("Cable tip not aligned, retrying...")
-
-                
+                    self.get_logger().warn(
+                        f"Cable insertion failed (attempt {insertion_attempts}/{max_insertion_attempts})."
+                    )
+                    send_feedback("Cable insertion failed, retrying insertion...")
+                    if insertion_attempts % 5 == 0:
+                        aligned_once = False
+                        self.get_logger().info("Re-running entrance alignment after repeated insertion failures.")
 
                 observation = get_observation()
                 if observation is None:
                     self.get_logger().info("No observation received.")
-                    continue
+
+            if insertion_attempts >= max_insertion_attempts:
+                self.get_logger().warn("Reached maximum insertion attempts without success.")
+                send_feedback("Insertion failed after max attempts.")
+                return False
+        
 
         except Exception as exc:
             self.get_logger().error(f"Failed to get socket entrance transform: {exc}")
             send_feedback(f"Error: {exc}")
             return False
+        finally:
+            self._force_feedback.set_stream_active(False)
+            self._force_feedback.stop_csv_logging()
 
         self.get_logger().info("Plug_in.insert_cable() exiting...")
         return True
