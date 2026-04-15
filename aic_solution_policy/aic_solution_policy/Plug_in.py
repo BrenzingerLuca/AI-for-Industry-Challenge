@@ -86,6 +86,51 @@ class Plug_in(Policy):
                 "constant_error(base_link) | "
                 f"x={dx:.4f}, y={dy:.4f}, z={dz:.4f}"
             )
+
+    def get_force_feedback(self, time_window=0.1):
+        """Returns the force and torque delta over last 0.1s as a tuple: (force: (x, y, z), torque: (x, y, z)). 
+        If no wrench message has been received yet, returns ((0, 0, 0), (0, 0, 0))."""
+        if self._last_wrench is not None:
+            current_forces = (
+                (self._last_wrench.wrench.force.x,
+                self._last_wrench.wrench.force.y, 
+                self._last_wrench.wrench.force.z),
+                (self._last_wrench.wrench.torque.x,
+                self._last_wrench.wrench.torque.y, 
+                self._last_wrench.wrench.torque.z)
+            )
+            
+            # Store forces with timestamp for comparison over the configured window.
+            stamp = self._last_wrench.header.stamp
+            current_time_s = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+            if not hasattr(self, '_force_history'):
+                self._force_history = []
+            
+            self._force_history.append((current_time_s, current_forces))
+            
+            # Keep only forces from the last configured time window.
+            cutoff_time_s = current_time_s - time_window
+            self._force_history = [(t, f) for t, f in self._force_history if t >= cutoff_time_s]
+            
+            if len(self._force_history) > 1:
+                earlier_forces = self._force_history[0][1]
+                delta_forces = (
+                    (current_forces[0][0] - earlier_forces[0][0],
+                    current_forces[0][1] - earlier_forces[0][1],
+                    current_forces[0][2] - earlier_forces[0][2]),
+                    (current_forces[1][0] - earlier_forces[1][0],
+                    current_forces[1][1] - earlier_forces[1][1],
+                    current_forces[1][2] - earlier_forces[1][2])
+                )
+            
+                # Calculate the gradient from current forces to the earlier_forces
+                forces_gradient = (
+                    (delta_forces[0][0] / time_window, delta_forces[0][1] / time_window, delta_forces[0][2] / time_window),
+                    (delta_forces[1][0] / time_window, delta_forces[1][1] / time_window, delta_forces[1][2] / time_window)
+                )
+                return delta_forces, forces_gradient
+        
+        return ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)), ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
     
     def set_my_target_pose(self, move_robot: MoveRobotCallback,
                             pose: Pose,
@@ -102,7 +147,7 @@ class Plug_in(Policy):
 
         self.set_pose_target(move_robot=move_robot, pose=pose, frame_id=frame_id)
         
-    def plug_in(self, target_pos_in_base_link, target_rot_in_base_link, move_robot):
+    def allign_connector(self, target_pos_in_base_link, target_rot_in_base_link, move_robot):
         """Bewegt den TCP so, dass die Spitze auf der Zielpose sitzt.
 
         Args:
@@ -174,21 +219,99 @@ class Plug_in(Policy):
                             pose=target_pose_in_base,
                             offset_x=0.0,
                             offset_y=0.0,
-                            offset_z=-0.02,
+                            offset_z=0.0,
                             frame_id="base_link")
 
-        self.get_logger().info(
-            "entrance_pose(base_link) | "
-            f"x={entrance_pos.x:.4f}, y={entrance_pos.y:.4f}, z={entrance_pos.z:.4f} | "
-            "tip error(base_link) | "
-            f"x={err_x:.4f}, y={err_y:.4f}, z={err_z:.4f} | "
-            "target_tcp_pose(base_link) | "
-            f"x={target_pose_in_base.position.x:.4f}, y={target_pose_in_base.position.y:.4f}, z={target_pose_in_base.position.z:.4f} | "
-            "tcp(base_link) | "
-            f"x={tcp_in_base.position.x:.4f}, y={tcp_in_base.position.y:.4f}, z={tcp_in_base.position.z:.4f} | "
-            "tip(base_link) | "
-            f"x={tip_pos.x:.4f}, y={tip_pos.y:.4f}, z={tip_pos.z:.4f}"
+        # If the error is small enough, we can consider the cable to be successfully aligned with the entrance.
+        if abs(err_x) < 0.005 and abs(err_y) < 0.005 and abs(err_z) < 0.005:
+            self.get_logger().info("Cable tip is well aligned with entrance (error < 5mm).")
+            return True
+        else:
+            self.get_logger().warn(
+                f"Cable tip is not well aligned with entrance: error_x={err_x:.4f}, error_y={err_y:.4f}, error_z={err_z:.4f}"
+            )
+            return False
+
+    def pluig_in(self, target_pos_in_base_link, target_rot_in_base_link, move_robot):
+        """Insert the cable by moving the TCP so that the tip sits on the target pose.
+
+        Args:
+            target_pos_in_base_link: Wanted position of the tip in base_link.
+            target_rot_in_base_link: Wanted rotation of the tip in base_link.
+        """
+        tip_pos, tip_rot = lookup_pose_in_base(
+                    self._parent_node._tf_buffer,
+                    "cable_0/sfp_tip_link",
+                )
+
+        tip_from_tcp = self._parent_node._tf_buffer.lookup_transform(
+            "cable_0/sfp_tip_link",
+            "gripper/tcp",
+            Time(),
         )
+
+        target_pose_in_base = compute_tcp_target_pose(
+            target_pos_in_base_link,
+            target_rot_in_base_link,
+            tip_from_tcp,
+        )
+
+        rviz_vector(self._parent_node, target_pose_in_base, color="green")
+            
+        rviz_vector(
+            self._parent_node,
+            Pose(
+                position=Point(x=tip_pos.x, y=tip_pos.y, z=tip_pos.z),
+                orientation=Quaternion(
+                    x=tip_rot.x,
+                    y=tip_rot.y,
+                    z=tip_rot.z,
+                    w=tip_rot.w,
+                ),
+            ),
+            color="cyan",
+        )
+
+        tcp_pos, tcp_rot = lookup_pose_in_base(
+            self._parent_node._tf_buffer,
+            "gripper/tcp",
+        )
+
+        tcp_in_base = Pose(
+            position=Point(
+                x=tcp_pos.x,
+                y=tcp_pos.y,
+                z=tcp_pos.z,
+            ),
+            orientation=Quaternion(
+                x=tcp_rot.x,
+                y=tcp_rot.y,
+                z=tcp_rot.z,
+                w=tcp_rot.w,
+            ),
+        )
+
+        
+
+        # Error between desired entrance pose and actual tip pose in base_link.
+        err_x = target_pos_in_base_link.x - tip_pos.x
+        err_y = target_pos_in_base_link.y - tip_pos.y
+        err_z = target_pos_in_base_link.z - tip_pos.z
+        self._last_constant_error_base = (err_x, err_y, err_z)
+
+        # Command the TCP pose so that the tip sits exactly on the entrance pose.
+        self.set_my_target_pose(move_robot=move_robot,
+                            pose=target_pose_in_base,
+                            offset_x=0.0,
+                            offset_y=0.0,
+                            offset_z=0.0,
+                            frame_id="base_link")
+
+        # If the error is small enough, we can consider the cable to be successfully aligned with the entrance.
+        if abs(err_x) < 0.005 and abs(err_y) < 0.005 and abs(err_z) < 0.005:
+            return True
+        else:
+            return False
 
     def insert_cable(
         self,
@@ -214,6 +337,18 @@ class Plug_in(Policy):
                 3) Call plug_in(target_pose_in_base_link)
                 '''
 
+                # Print force delta and gradient for debugging/monitoring.
+                delta_forces, forces_gradient = self.get_force_feedback(time_window=0.5)
+                self.get_logger().info(
+                    f"Force delta over last 0.5s: "
+                    f"force: x={delta_forces[0][0]:.3f}, y={delta_forces[0][1]:.3f}, z={delta_forces[0][2]:.3f} | "
+                    f"torque: x={delta_forces[1][0]:.3f}, y={delta_forces[1][1]:.3f}, z={delta_forces[1][2]:.3f}"
+                )
+                self.get_logger().info(
+                    f"Force gradient over last 0.5s: "
+                    f"force: x={forces_gradient[0][0]:.3f}, y={forces_gradient[0][1]:.3f}, z={forces_gradient[0][2]:.3f} | "
+                    f"torque: x={forces_gradient[1][0]:.3f}, y={forces_gradient[1][1]:.3f}, z={forces_gradient[1][2]:.3f}"
+                )
 
                 # Entrance-Pose in base_link fuer Sollausrichtung laden.
                 entrance_pos, entrance_rot = lookup_pose_in_base(
@@ -221,7 +356,31 @@ class Plug_in(Policy):
                     "task_board/nic_card_mount_0/sfp_port_0_link_entrance",
                 )
 
-                self.plug_in(entrance_pos, entrance_rot, move_robot)
+                aligned = self.allign_connector(entrance_pos, entrance_rot, move_robot)
+
+
+                # Calculatet 7-cm z to entrance 
+                target_pos_in_base_link = Point(
+                    x=entrance_pos.x,
+                    y=entrance_pos.y,
+                    z=entrance_pos.z - 0.07
+                )
+                target_rot_in_base_link = entrance_rot
+
+                if aligned:
+                    self.get_logger().info("Cable tip is aligned with entrance, proceeding to insert.")
+                    send_feedback("Cable tip aligned, inserting cable...")
+                    inserted = self.pluig_in(target_pos_in_base_link, target_rot_in_base_link, move_robot)
+                    if inserted:
+                        self.get_logger().info("Cable successfully inserted.")
+                        send_feedback("Cable successfully inserted.")
+                        break
+                    else:
+                        self.get_logger().warn("Cable insertion failed, retrying alignment.")
+                        send_feedback("Cable insertion failed, retrying alignment...")
+                else:
+                    self.get_logger().warn("Cable tip is not aligned with entrance, retrying.")
+                    send_feedback("Cable tip not aligned, retrying...")
 
                 
 
