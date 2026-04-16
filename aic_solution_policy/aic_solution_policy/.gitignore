@@ -1,0 +1,36 @@
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# ROS 2 & Build Artefakte (falls vorhanden)
+build/
+install/
+log/
+
+# KI / YOLO Modelle (große Binärdateien nicht in Git speichern!)
+*.pt
+*.onnx
+*.weights
+*.engine
+
+# Virtuelle Umgebungen
+venv/
+.venv/
+env/
+(aic)/
+
+# IDE Einstellungen
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Betriebssystem-spezifische Dateien
+.DS_Store
+Thumbs.db
+
+# Notebook-Checkpoints
+.ipynb_checkpoints/
