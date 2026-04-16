@@ -1,0 +1,12 @@
+
+path: /home/lucab/ws_aic/src/aic/aic_solution/training/processed_dataset
+train: train/images
+val: val/images
+
+# Keypoints: 4 corners (TL, TR, BR, BL)
+# Shape: [number of keypoints, number of values (x, y, visibility)]
+kpt_shape: [4, 3] 
+
+names:
+  0: sfp_port_0
+  1: sfp_port_1
