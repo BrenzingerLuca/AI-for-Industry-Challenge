@@ -252,20 +252,17 @@ class VisionBasedSFPPlugIn(Policy):
         self.get_logger().info("--- Vision Task gestartet ---")
         
         # Port detection
-        for i in range(3):
-            obs = get_observation()
-            found_ports = self.detect_ports(obs)
+        obs = get_observation()
+        found_ports = self.detect_ports(obs)
 
-            if not found_ports:
-                self.get_logger().error("Kein Port im Sichtfeld erkannt!")
-                return False
+        if not found_ports:
+            self.get_logger().error("Kein Port im Sichtfeld erkannt!")
+            return False
 
-            for port, data in found_ports.items():
-                p, q = data["pos"], data["quat"]
-                self.get_logger().info(f"📍 Port {port} bei: [{p[0]:.5f}, {p[1]:.5f}, {p[2]:.5f}]")
-                self.get_logger().info(f"   Orientierung: {q}")
-            
-            self.sleep_for(0.5)
+        for port, data in found_ports.items():
+            p, q = data["pos"], data["quat"]
+            self.get_logger().info(f"📍 Port {port} bei: [{p[0]:.5f}, {p[1]:.5f}, {p[2]:.5f}]")
+            self.get_logger().info(f"   Orientierung: {q}")
 
         # Get the goal port from task description
         try:
