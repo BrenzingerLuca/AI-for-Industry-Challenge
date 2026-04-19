@@ -253,9 +253,8 @@ class VisionBasedPortDocking(Policy):
                             frame_id="base_link")
 
         # If the error is small enough, we can consider the cable to be successfully aligned with the entrance.
-        self.sleep_for(5.0)
+        self.sleep_for(3.0)
 
-        return True
         if abs(err_x) < 0.005 and abs(err_y) < 0.005 and abs(err_z) < 0.005:
             self.get_logger().info("Cable tip is well aligned with entrance (error < 5mm).")
             return True
@@ -512,9 +511,9 @@ class VisionBasedPortDocking(Policy):
 
             # 5. Alignment-Phase (Positionierung über dem Port)
             # Wir zielen auf 2 cm über den Port
-            alignment_pos = Point(x=p[0], y=p[1], z=p[2] + 0.02)
+            alignment_pos = Point(x=p[0], y=p[1], z=p[2] + 0.005)
             
-            self.get_logger().info(f"Fahre Alignment-Pose an: z={alignment_pos.z:.3f}")
+            self.get_logger().info(f"Fahre Alignment-Pose an: x={alignment_pos.x:.5f}, y={alignment_pos.y:.5f}, z={alignment_pos.z:.5f}")
             send_feedback("Aligning connector above port...")
             
             aligned = self.allign_connector(alignment_pos, entrance_rot, move_robot)
@@ -530,15 +529,15 @@ class VisionBasedPortDocking(Policy):
             self.get_logger().info("Starte Insertion...")
             
             insertion_pos = Point(x=p[0], y=p[1], z=p[2] - 0.04)
-            success = self.plug_in(insertion_pos, entrance_rot, move_robot)
+            #success = self.plug_in(insertion_pos, entrance_rot, move_robot)
 
-            if success:
-                self.get_logger().info("✅ KABEL ERFOLGREICH EINGESTECKT!")
-                send_feedback("Task completed successfully.")
-            else:
-                self.get_logger().error("❌ Stecken fehlgeschlagen.")
-                send_feedback("Insertion failed.")
-                return False
+            # if success:
+            #     self.get_logger().info("✅ KABEL ERFOLGREICH EINGESTECKT!")
+            #     send_feedback("Task completed successfully.")
+            # else:
+            #     self.get_logger().error("❌ Stecken fehlgeschlagen.")
+            #     send_feedback("Insertion failed.")
+            #     return False
 
         except Exception as exc:
             self.get_logger().error(f"KRITISCHER FEHLER: {exc}")
