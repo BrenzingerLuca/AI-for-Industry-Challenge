@@ -1,0 +1,13 @@
+# Spezifische Dateien in aic_solution_policy
+aic_solution_policy/files.txt
+
+# Alle Dateien und Ordner, die mit 'data' beginnen im aic_solution_policy Ordner
+aic_solution_policy/data*
+
+# Jupyter Notebook Checkpoints (überall im Projekt)
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Falls du auch Python-Bytecode ignorieren willst (empfohlen)
+__pycache__/
+*.py[cod]
