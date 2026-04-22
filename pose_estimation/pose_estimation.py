@@ -1,9 +1,7 @@
 """
 This script, SFPPoseVisualizer, is a specialized version of the fusion node. 
 Its primary purpose is to triangulate the 3D position of SFP ports and force 
-a specific orientation (where the Z-axis always points straight down). This is
-often used for robotic alignment where the port must be approached from a specific
-global direction regardless of small tilt errors in the detection.
+a specific orientation (where the Z-axis always points straight down). 
 
 Key Features:
 Pose Estimation: 
@@ -28,10 +26,10 @@ from scipy.spatial.transform import Rotation as R
 import message_filters
 
 # --- CONFIGURATION ---
-MODEL_PATH = '../training/models/best150.pt'
+MODEL_PATH = '../training/models/single_sc_detection.pt'
 TARGET_FRAME = 'base'               
 PRINT_INTERVAL = 3.0                
-CONFIDENCE_THRESHOLD = 0.90         
+CONFIDENCE_THRESHOLD = 0.70         
 # ---------------------
 
 class SFPPoseVisualizer(Node):
