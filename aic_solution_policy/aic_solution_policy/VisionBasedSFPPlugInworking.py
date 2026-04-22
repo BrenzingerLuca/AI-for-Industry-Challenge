@@ -1,14 +1,11 @@
 import numpy as np
 import math
-import rclpy
-from pathlib import Path
 from scipy.spatial.transform import Rotation as R
 from cv_bridge import CvBridge
 from ultralytics import YOLO
 
-from aic_control_interfaces.msg import MotionUpdate, TrajectoryGenerationMode
+from aic_control_interfaces.msg import MotionUpdate
 from aic_task_interfaces.msg import Task
-from sensor_msgs.msg import CameraInfo
 from rclpy.time import Time
 from aic_model.policy import (
     Policy,
@@ -17,7 +14,7 @@ from aic_model.policy import (
     SendFeedbackCallback,
 )
 
-class VisionBasedSFPPlugIn(Policy):
+class VisionBasedSFPPlugInworking(Policy):
     def __init__(self, parent_node):
         super().__init__(parent_node)
         self.get_logger().info("VisionBasedSFPPlugIn initialisiert.")
@@ -28,6 +25,10 @@ class VisionBasedSFPPlugIn(Policy):
         
         # YOLO Modell laden
         self._init_yolo_model()
+
+        dummy_img = np.zeros((640, 640, 3), dtype=np.uint8)
+        self._model.predict(dummy_img, verbose=False) 
+        self.get_logger().info("YOLO Warmup abgeschlossen.")
 
     ########################################################################################################### port detection
     def _init_yolo_model(self):
@@ -147,7 +148,7 @@ class VisionBasedSFPPlugIn(Policy):
         motion_update.target_damping = self._get_diagonal_matrix(damping_diag)
 
         for i in range(100):
-            motion_update.header.stamp = self.get_clock().now().to_msg()
+            #motion_update.header.stamp = self.get_clock().now().to_msg()
             move_robot(motion_update=motion_update)
             
             # Monitoring

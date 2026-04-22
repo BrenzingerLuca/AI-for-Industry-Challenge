@@ -1,7 +1,6 @@
 import math
 import os
-from pathlib import Path
-
+from ultralytics import YOLO  # noqa: WPS433
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -12,6 +11,8 @@ from aic_model.policy import (
     MoveRobotCallback,
     SendFeedbackCallback,
 )
+from scipy.spatial.transform import Rotation as Rotation
+
 
 class VisionBasedSFPPlugIn(Policy):
     def __init__(self, parent_node):
@@ -33,8 +34,7 @@ class VisionBasedSFPPlugIn(Policy):
         self._yolo_weights_path = None
 
     def _ensure_vision_deps(self):
-        if self._Rotation is None:
-            from scipy.spatial.transform import Rotation as Rotation  # noqa: WPS433
+        if self._Rotation is None:  # noqa: WPS433
 
             self._Rotation = Rotation
         if self._bridge is None:
@@ -44,35 +44,10 @@ class VisionBasedSFPPlugIn(Policy):
 
     ########################################################################################################### port detection
     def _init_yolo_model(self):
-        if self._yolo_model is not None:
-            return
-
-        current_file_path = Path(__file__).resolve()
-
-        possible_paths = [
-            current_file_path.parents[1] / "models" / "best150.pt",
-            current_file_path.parents[2] / "training" / "models" / "best150.pt",
-            Path.cwd() / "aic_solution" / "training" / "models" / "best150.pt",
-            Path.cwd() / "training" / "models" / "best150.pt",
-        ]
-
-        model_path = None
-        for candidate in possible_paths:
-            if candidate.exists():
-                model_path = candidate
-                break
-
-        if model_path is None:
-            msg = "YOLO model not found. Tried: " + ", ".join(str(p) for p in possible_paths)
-            self.get_logger().error(msg)
-            raise FileNotFoundError(msg)
-
+        # Reduziert auf den verifizierten Pfad
+        model_path = "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt"
         self.get_logger().info(f"Lade YOLO Modell: {model_path}")
-        # Import ultralytics/torch lazily (heavy import).
-        from ultralytics import YOLO  # noqa: WPS433
-
-        self._yolo_weights_path = model_path
-        self._yolo_model = YOLO(str(model_path))
+        self._model = YOLO(model_path)
 
     def _get_cam_frame_data(self, cam_full_name):
         """Holt aktuelle Kamera-Position/Rotation via TF."""
