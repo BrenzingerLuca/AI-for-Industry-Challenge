@@ -1,15 +1,11 @@
-import numpy as np
 import math
-import rclpy
+import os
 from pathlib import Path
-from scipy.spatial.transform import Rotation as R
-from cv_bridge import CvBridge
-from ultralytics import YOLO
 
-from aic_control_interfaces.msg import MotionUpdate, TrajectoryGenerationMode
-from aic_task_interfaces.msg import Task
-from sensor_msgs.msg import CameraInfo
-from rclpy.time import Time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from aic_task_interfaces.msg import Task
 from aic_model.policy import (
     Policy,
     GetObservationCallback,
@@ -21,29 +17,80 @@ class VisionBasedSFPPlugIn(Policy):
     def __init__(self, parent_node):
         super().__init__(parent_node)
         self.get_logger().info("VisionBasedSFPPlugIn initialisiert.")
-        
-        self._bridge = CvBridge()
+
+        # Make Ultralytics config writable in constrained/container environments.
+        # Ultralytics uses YOLO_CONFIG_DIR and will create settings.json there.
+        os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp")
+
+        # Delay heavy imports until we actually need them (configure should be fast).
+        self._Rotation = None
+        self._bridge = None
         self._camera_names = ['left', 'center', 'right']
         self._cam_intrinsics = {}
-        
-        # YOLO Modell laden
-        self._init_yolo_model()
+
+        # YOLO will be initialized lazily (first use) to keep lifecycle configure fast.
+        self._yolo_model = None
+        self._yolo_weights_path = None
+
+    def _ensure_vision_deps(self):
+        if self._Rotation is None:
+            from scipy.spatial.transform import Rotation as Rotation  # noqa: WPS433
+
+            self._Rotation = Rotation
+        if self._bridge is None:
+            from cv_bridge import CvBridge  # noqa: WPS433
+
+            self._bridge = CvBridge()
 
     ########################################################################################################### port detection
     def _init_yolo_model(self):
-        # Reduziert auf den verifizierten Pfad
-        model_path = "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt"
+        if self._yolo_model is not None:
+            return
+
+        current_file_path = Path(__file__).resolve()
+
+        possible_paths = [
+            current_file_path.parents[1] / "models" / "best150.pt",
+            current_file_path.parents[2] / "training" / "models" / "best150.pt",
+            Path.cwd() / "aic_solution" / "training" / "models" / "best150.pt",
+            Path.cwd() / "training" / "models" / "best150.pt",
+        ]
+
+        model_path = None
+        for candidate in possible_paths:
+            if candidate.exists():
+                model_path = candidate
+                break
+
+        if model_path is None:
+            msg = "YOLO model not found. Tried: " + ", ".join(str(p) for p in possible_paths)
+            self.get_logger().error(msg)
+            raise FileNotFoundError(msg)
+
         self.get_logger().info(f"Lade YOLO Modell: {model_path}")
-        self._model = YOLO(model_path)
+        # Import ultralytics/torch lazily (heavy import).
+        from ultralytics import YOLO  # noqa: WPS433
+
+        self._yolo_weights_path = model_path
+        self._yolo_model = YOLO(str(model_path))
 
     def _get_cam_frame_data(self, cam_full_name):
         """Holt aktuelle Kamera-Position/Rotation via TF."""
         try:
+            self._ensure_vision_deps()
+            import numpy as np  # noqa: WPS433
+            from rclpy.time import Time  # noqa: WPS433
+
             target = f"{cam_full_name}/optical" 
             trans = self._parent_node._tf_buffer.lookup_transform("base_link", target, Time())
             return {
                 "pos": np.array([trans.transform.translation.x, trans.transform.translation.y, trans.transform.translation.z]),
-                "rot": R.from_quat([trans.transform.rotation.x, trans.transform.rotation.y, trans.transform.rotation.z, trans.transform.rotation.w]).as_matrix()
+                "rot": self._Rotation.from_quat([
+                    trans.transform.rotation.x,
+                    trans.transform.rotation.y,
+                    trans.transform.rotation.z,
+                    trans.transform.rotation.w,
+                ]).as_matrix(),
             }
         except Exception:
             return None
@@ -57,6 +104,8 @@ class VisionBasedSFPPlugIn(Policy):
 
     # --- DEINE TRIANGULATION ---
     def _triangulate_rays(self, rays):
+        import numpy as np  # noqa: WPS433
+
         I = np.eye(3)
         A, b = np.zeros((3,3)), np.zeros(3)
         for r in rays:
@@ -67,6 +116,9 @@ class VisionBasedSFPPlugIn(Policy):
 
     # --- DEINE FORCED POSE LOGIK ---
     def _calculate_forced_pose(self, corners):
+        self._ensure_vision_deps()
+        import numpy as np  # noqa: WPS433
+
         corners = np.array(corners)
         center = np.mean(corners, axis=0)
         vec_x = corners[1] - corners[0]
@@ -76,10 +128,13 @@ class VisionBasedSFPPlugIn(Policy):
         vec_y = np.cross(vec_z, vec_x)
         vec_y /= np.linalg.norm(vec_y)
         rot_matrix = np.stack([vec_x, vec_y, vec_z], axis=1)
-        return center, R.from_matrix(rot_matrix).as_quat()
+        return center, self._Rotation.from_matrix(rot_matrix).as_quat()
 
     def detect_ports(self, observation):
         if observation is None: return {}
+
+        self._ensure_vision_deps()
+        import numpy as np  # noqa: WPS433
         
         # Intrinsics sammeln
         for cam in self._camera_names:
@@ -94,7 +149,8 @@ class VisionBasedSFPPlugIn(Policy):
             if img_msg is None: continue
             
             cv_img = self._bridge.imgmsg_to_cv2(img_msg, "bgr8")
-            res = self._model.predict(cv_img, conf=0.8, verbose=False)[0]
+            self._init_yolo_model()
+            res = self._yolo_model.predict(cv_img, conf=0.8, verbose=False)[0]
             
             for j, box in enumerate(res.boxes):
                 cls = int(box.cls[0])
@@ -136,6 +192,8 @@ class VisionBasedSFPPlugIn(Policy):
         return mat
     
     def _move_tcp_to_pose(self, pos, quat, move_robot, get_observation, stiffness_diag, damping_diag):
+        from aic_control_interfaces.msg import MotionUpdate  # noqa: WPS433
+
         motion_update = MotionUpdate()
         motion_update.header.frame_id = "base_link"
         motion_update.trajectory_generation_mode.mode = 2 
@@ -174,6 +232,10 @@ class VisionBasedSFPPlugIn(Policy):
         auf der port_pose landet.
         """
         
+        self._ensure_vision_deps()
+        import numpy as np  # noqa: WPS433
+        from rclpy.time import Time  # noqa: WPS433
+
         # 1. Hol dir den Versatz: Wo ist der Greifer relativ zur Kabelspitze?
         # Wir schauen, wie wir von der Spitze zum Greifer kommen.
         tf_cable_to_tcp = self._parent_node._tf_buffer.lookup_transform(
@@ -185,13 +247,13 @@ class VisionBasedSFPPlugIn(Policy):
         # Umwandeln in Matrizen
         # A: Transformation von Base zum erkannten Port
         mat_base_to_port = np.eye(4)
-        mat_base_to_port[:3, :3] = R.from_quat(port_quat).as_matrix()
+        mat_base_to_port[:3, :3] = self._Rotation.from_quat(port_quat).as_matrix()
         mat_base_to_port[:3, 3] = port_pos
         
         # B: Transformation von Kabelspitze zum Greifer
         mat_cable_to_tcp = np.eye(4)
         q_off = tf_cable_to_tcp.transform.rotation
-        mat_cable_to_tcp[:3, :3] = R.from_quat([q_off.x, q_off.y, q_off.z, q_off.w]).as_matrix()
+        mat_cable_to_tcp[:3, :3] = self._Rotation.from_quat([q_off.x, q_off.y, q_off.z, q_off.w]).as_matrix()
         t_off = tf_cable_to_tcp.transform.translation
         mat_cable_to_tcp[:3, 3] = [t_off.x, t_off.y, t_off.z]
         
@@ -200,7 +262,7 @@ class VisionBasedSFPPlugIn(Policy):
         target_matrix = mat_base_to_port @ mat_cable_to_tcp
         
         target_pos = target_matrix[:3, 3]
-        target_quat = R.from_matrix(target_matrix[:3, :3]).as_quat()
+        target_quat = self._Rotation.from_matrix(target_matrix[:3, :3]).as_quat()
         
         return target_pos, target_quat
     
@@ -209,6 +271,9 @@ class VisionBasedSFPPlugIn(Policy):
         Berechnet die benötigte gripper/tcp Pose basierend auf den 
         hochpräzisen Nominal-Werten (Ersatz für Ground Truth TF).
         """
+        self._ensure_vision_deps()
+        import numpy as np  # noqa: WPS433
+
         # --- DEINE PRÄZISIONS-WERTE AUS DEM LOG (CABLE TO TCP) ---
         # Position
         off_x = 0.0004576051855596508
@@ -223,12 +288,12 @@ class VisionBasedSFPPlugIn(Policy):
 
         # 1. Matrix: Base -> Port (Das Ziel im Raum, wo die Spitze hin soll)
         mat_base_to_port = np.eye(4)
-        mat_base_to_port[:3, :3] = R.from_quat(port_quat).as_matrix()
+        mat_base_to_port[:3, :3] = self._Rotation.from_quat(port_quat).as_matrix()
         mat_base_to_port[:3, 3] = port_pos
         
         # 2. Matrix: Kabelspitze -> Greifer (Der starre Versatz aus deinen Werten)
         mat_cable_to_tcp = np.eye(4)
-        mat_cable_to_tcp[:3, :3] = R.from_quat([off_qx, off_qy, off_qz, off_qw]).as_matrix()
+        mat_cable_to_tcp[:3, :3] = self._Rotation.from_quat([off_qx, off_qy, off_qz, off_qw]).as_matrix()
         mat_cable_to_tcp[:3, 3] = [off_x, off_y, off_z]
         
         # 3. Ziel-Pose für den Greifer berechnen
@@ -236,13 +301,13 @@ class VisionBasedSFPPlugIn(Policy):
         target_matrix = mat_base_to_port @ mat_cable_to_tcp
         
         target_pos = target_matrix[:3, 3]
-        target_quat = R.from_matrix(target_matrix[:3, :3]).as_quat()
+        target_quat = self._Rotation.from_matrix(target_matrix[:3, :3]).as_quat()
         
         return target_pos, target_quat
 
     #####################################################################################################################################       
         
-    def insert_cable(self, task: Task, get_observation: GetObservationCallback, move_robot: MoveRobotCallback, send_feedback: SendFeedbackCallback):
+    def insert_cable(self, task: "Task", get_observation: GetObservationCallback, move_robot: MoveRobotCallback, send_feedback: SendFeedbackCallback):
 
         # --- DEBUG: TASK OBJEKT PRINTEN ---
         self.get_logger().info("==========================================")
