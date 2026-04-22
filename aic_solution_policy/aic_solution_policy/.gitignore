@@ -1,0 +1,18 @@
+# python artifacts
+__pycache__/
+*.egg-info/
+build/
+files.txt
+
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Ignore mesh/texture assets in aic_mujoco mjcf, keep only .xml
+aic_utils/aic_mujoco/mjcf/*.obj
+aic_utils/aic_mujoco/mjcf/*.stl
+aic_utils/aic_mujoco/mjcf/*.png
+
+# Ignore aic_isaac usd assets
+aic_utils/aic_isaac/aic_isaaclab/source/aic_task/aic_task/tasks/manager_based/aic_task/Intrinsic_assets/
+

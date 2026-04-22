@@ -1,0 +1,1 @@
+wall_time_iso,wall_time_s,wrench_stamp_s,abs_force_x,abs_force_y,abs_force_z,abs_torque_x,abs_torque_y,abs_torque_z,delta_force_x,delta_force_y,delta_force_z,delta_torque_x,delta_torque_y,delta_torque_z,grad_force_x,grad_force_y,grad_force_z,grad_torque_x,grad_torque_y,grad_torque_z
