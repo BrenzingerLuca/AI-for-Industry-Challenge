@@ -22,10 +22,10 @@ from sklearn.model_selection import train_test_split
 # CONFIGURATION
 # ==============================================================================
 # The name of the folder inside data/datasets/
-RAW_DATA_NAME = "single_nic_card"
+RAW_DATA_NAME = "single_sc_port_dataset"
 
 # The name the processed dataset is saved
-DATASET_NAME = "single_nic_card" 
+DATASET_NAME = "single_sc_port" 
 
 # Train/Val split ratio (0.2 means 20% for validation)
 VAL_SIZE = 0.2
@@ -65,14 +65,14 @@ def main():
     # Define absolute-style paths relative to this script's location
     # Assuming script is run from inside ~/ws_aic/src/aic/aic_solution/training/
     base_dir = os.getcwd()
-    source_dir = os.path.join(base_dir, "../data/datasets", DATASET_NAME)
+    source_dir = os.path.join(base_dir, "../data/datasets", RAW_DATA_NAME)
     target_base = os.path.join(base_dir, "prepared_datasets")
     split_dir = os.path.join(target_base, f"{DATASET_NAME}_split")
     zip_path = os.path.join(target_base, f"{DATASET_NAME}_colab.zip")
 
     print(f"--- Preparing Dataset: {DATASET_NAME} ---")
 
-    if base_dir != "training":
+    if os.path.basename(base_dir) != "training":
         print("\nTo ensure paths are resolved correctly, please run this script")
         print("from the 'training' directory: Using python3 scripts/prepare_dataset.py")
         sys.exit(1)

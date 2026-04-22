@@ -43,7 +43,7 @@ from functools import partial
 # =============================================================================
  
 # Output folder where images/ and labels/ subdirectories will be created
-OUTPUT_PATH = "datasets/single_nic_card_dataset"
+OUTPUT_PATH = "datasets/single_sc_port_dataset"
  
 # Prefix for saved filenames, e.g. "run1" -> "run1_left_camera_1_....jpg"
 OUTPUT_PREFIX = "img"
@@ -54,12 +54,12 @@ CAMERA_NAMES = ['left_camera', 'center_camera', 'right_camera']
 # TF frames to label, mapped to their YOLO class ID
 # Add or remove frames here to change which ports are labeled
 TARGET_FRAMES = {
-    "task_board/nic_card_mount_0/sfp_port_0_link_entrance": 0,
-    "task_board/nic_card_mount_0/sfp_port_1_link_entrance": 1,
+    "task_board/sc_port_1/sc_port_base_link_entrance": 0
+   # "task_board/nic_card_mount_0/sfp_port_1_link_entrance": 1,
 }
  
 # Physical dimensions of the SFP port opening in meters
-PORT_WIDTH  = 0.014
+PORT_WIDTH  = 0.0256
 PORT_HEIGHT = 0.009
  
 # =============================================================================
