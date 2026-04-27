@@ -1,8 +1,6 @@
 import numpy as np
 import math
 from scipy.spatial.transform import Rotation as R
-from cv_bridge import CvBridge
-from ultralytics import YOLO
 from rclpy.duration import Duration
 from aic_control_interfaces.msg import MotionUpdate
 from aic_task_interfaces.msg import Task
@@ -15,9 +13,12 @@ from aic_model.policy import (
 )
 from std_srvs.srv import Trigger
 
-class VisionBasedUniversalPlugIn(Policy):
+class SoftPlugIn(Policy):
     def __init__(self, parent_node):
         super().__init__(parent_node)
+        from ultralytics import YOLO
+        from cv_bridge import CvBridge
+
         self.get_logger().info("UniversalVisionPlugIn mit erweiterten Debug-Infos initialisiert.")
         self._tare_client = self._parent_node.create_client(Trigger, '/aic_controller/tare_force_torque_sensor')
         self._bridge = CvBridge()
@@ -26,7 +27,8 @@ class VisionBasedUniversalPlugIn(Policy):
         
         self._configs = {
             'sc': {
-                'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
+                'model_path': "/models/single_sc_detection.pt", #this model path is used for the docker
+                #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
                 'off_pos': [0.0, -0.015385, -0.04045],
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
                 'z_approach': 0.01,
@@ -34,11 +36,12 @@ class VisionBasedUniversalPlugIn(Policy):
                 'cable_tip_frame': "cable_0/sc_tip_link"
             },
             'sfp': {
-                'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt",
+                'model_path': "/models/best150.pt",
+                #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt",
                 'off_pos': [0.0, -0.015385, -0.04245],
                 'off_quat': [0.179611, 0.005559, -0.027461, -0.983338],
                 'z_approach': 0.01,
-                'z_plug': -0.05,
+                'z_plug': -0.043,
                 'cable_tip_frame': "cable_0/sfp_tip_link"
             }
         }
@@ -49,7 +52,7 @@ class VisionBasedUniversalPlugIn(Policy):
             self._models[c_type] = YOLO(cfg['model_path'])
             self._models[c_type].predict(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)
 
-    # --- Triangulation & Detection ---
+    # --- Triangulation & Port Detection ---
     def _get_cam_frame_data(self, cam_full_name):
         try:
             target = f"{cam_full_name}/optical" 
@@ -127,118 +130,58 @@ class VisionBasedUniversalPlugIn(Policy):
         
         return found_ports
 
-    ######################################################################## force stuff
-    def _check_force_threshold(self, observation):
-        """
-        Überprüft die aktuellen Kräfte am Handgelenk.
-        Pfad laut Debug: obs.wrist_wrench
-        """
-        try:
-            if hasattr(observation, 'wrist_wrench') and observation.wrist_wrench is not None:
-                # wrist_wrench ist ein WrenchStamped -> .wrench -> .force
-                force = observation.wrist_wrench.wrench.force
-                fx, fy, fz = force.x, force.y, force.z
-                
-                # Berechnung der Gesamtkraft (Vektorlänge) oder Einzelachsen
-                # Hier prüfen wir jede Achse einzeln auf 20N (wie gewünscht)
-                if abs(fx) > 20.0 or abs(fy) > 20.0 or abs(fz) > 20.0:
-                    self.get_logger().warning(
-                        f"⚠️ HOHE KRAFT! FX: {fx:6.2f} N | FY: {fy:6.2f} N | FZ: {fz:6.2f} N"
-                    )
-                    return True
-        except Exception as e:
-            # Falls doch mal ein Attribut fehlt, keine Unterbrechung des Programms
-            pass
-        return False
-
-    def _call_tare_service(self):
-        """Ruft den externen Tare-Service auf und wartet auf Vollzug."""
-        self.get_logger().info("Warte auf Tare-Service...")
-        if not self._tare_client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error("Tare-Service '/aic_controller/tare_force_torque_sensor' nicht erreichbar!")
-            return False
-
-        future = self._tare_client.call_async(Trigger.Request())
-        
-        # Warten auf die Antwort (in Policy-Methoden ist das meist unbedenklich)
-        # Da wir in einem rclpy-Kontext sind, nutzen wir eine kleine Schleife:
-        import time
-        start_time = time.time()
-        while not future.done():
-            if time.time() - start_time > 5.0:
-                self.get_logger().error("Timeout beim Warten auf Tare-Antwort!")
-                return False
-            time.sleep(0.1)
-
-        result = future.result()
-        if result.success:
-            self.get_logger().info(f"Tare erfolgreich: {result.message}")
-            self.sleep_for(0.5) # Kurze Pause, damit die Werte sich stabilisieren
-            return True
-        else:
-            self.get_logger().error(f"Tare fehlgeschlagen: {result.message}")
-            return False
-    ######################################################################################
-    ######################################################################################
-    # def _debug_print_obs_structure(self, obs):
-    #     """Hilfsfunktion, um die Struktur von obs im Log zu analysieren."""
-    #     self.get_logger().info("--- DEBUG: Struktur von 'obs' ---")
-    #     # Zeige alle Haupt-Attribute
-    #     attributes = [attr for attr in dir(obs) if not attr.startswith('_')]
-    #     self.get_logger().info(f"Attribute in obs: {attributes}")
-
-    #     if hasattr(obs, 'controller_state'):
-    #         self.get_logger().info("--- DEBUG: Struktur von 'obs.controller_state' ---")
-    #         cs_attrs = [attr for attr in dir(obs.controller_state) if not attr.startswith('_')]
-    #         self.get_logger().info(f"Attribute in controller_state: {cs_attrs}")
-            
-    #         # Falls 'wrench' existiert, schauen wir tiefer rein
-    #         if hasattr(obs.controller_state, 'wrench'):
-    #             w = obs.controller_state.wrench
-    #             self.get_logger().info(f"Typ von wrench: {type(w)}")
-    #             # Oft ist es ein WrenchStamped, dann hat es .wrench
-    #             if hasattr(w, 'wrench'):
-    #                 self.get_logger().info(f"Kraft-Werte aktuell: x={w.wrench.force.x}, y={w.wrench.force.y}, z={w.wrench.force.z}")
-    #     self.get_logger().info("---------------------------------")
-
-    ############################################################################################# Debug
     # --- Bewegungssteuerung mit Debugging ---
-    def _move_tcp_to_pose(self, pos, quat, move_robot, get_observation, stiffness, damping, label="Target"):
+    def _move_tcp_smooth_cartesian(self, pos, quat, move_robot, get_observation, stiffness, damping, n_steps=80, label="Target"):
+        """
+        Sendet konstant die Zielpose mit niedriger Steifigkeit.
+        Der Impedanzregler konvergiert selbst sanft → wenig Jerk.
+        """
         motion_update = MotionUpdate()
         motion_update.header.frame_id = "base_link"
-        motion_update.trajectory_generation_mode.mode = 2 
-        motion_update.pose.position.x, motion_update.pose.position.y, motion_update.pose.position.z = map(float, pos)
-        motion_update.pose.orientation.x, motion_update.pose.orientation.y, motion_update.pose.orientation.z, motion_update.pose.orientation.w = map(float, quat)
-        
+        motion_update.trajectory_generation_mode.mode = 2
+
+        motion_update.pose.position.x = float(pos[0])
+        motion_update.pose.position.y = float(pos[1])
+        motion_update.pose.position.z = float(pos[2])
+        motion_update.pose.orientation.x = float(quat[0])
+        motion_update.pose.orientation.y = float(quat[1])
+        motion_update.pose.orientation.z = float(quat[2])
+        motion_update.pose.orientation.w = float(quat[3])
+
         mat_stiff = [0.0] * 36
-        mat_damp = [0.0] * 36
-        for i in range(6): 
-            mat_stiff[i*6+i] = float(stiffness[i])
-            mat_damp[i*6+i] = float(damping[i])
+        mat_damp  = [0.0] * 36
+
+        for j in range(6):
+            mat_stiff[j*6+j] = float(stiffness[j])
+            mat_damp[j*6+j]  = float(damping[j])
+
         motion_update.target_stiffness = mat_stiff
-        motion_update.target_damping = mat_damp
+        motion_update.target_damping   = mat_damp
 
-        self.get_logger().info(f"==> Fahre {label} an: P=[{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}]")
+        self.get_logger().info(f"==> Fahre {label} an (smooth): P=[{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}]")
 
-        for i in range(100):
+        dist = float('inf')
+        for i in range(n_steps):
             move_robot(motion_update=motion_update)
             obs = get_observation()
             self._check_force_threshold(obs)
+
             curr = obs.controller_state.tcp_pose.position
-            
-            # Fehlerberechnung (Euklidische Distanz)
-            dist = math.sqrt((curr.x - pos[0])**2 + (curr.y - pos[1])**2 + (curr.z - pos[2])**2)
-            
-            if dist < 0.0005: # 0.5mm Schwellwert
-                self.get_logger().info(f"    Ziel erreicht! Restfehler: {dist*1000:.3f} mm")
-                return
-            
+            dist = math.sqrt(
+                (curr.x - pos[0])**2 +
+                (curr.y - pos[1])**2 +
+                (curr.z - pos[2])**2
+            )
+
             if i % 25 == 0:
                 self.get_logger().info(f"    [{i}] Distanz zu {label}: {dist*1000:.2f} mm")
-            
-            self.sleep_for(0.05)
-        
-        self.get_logger().warning(f"    Timeout! Restfehler: {dist*1000:.3f} mm")
+                if dist < 0.001: # 0.5mm Schwellwert
+                    self.get_logger().info(f"    Ziel erreicht! Restfehler: {dist*1000:.3f} mm")
+                    return dist
+
+            self.sleep_for(0.1)
+        self.get_logger().info(f"    [{label}] Fertig. Restfehler: {dist*1000:.3f} mm")
+        return dist
 
     def _get_tcp_goal_pose(self, port_pos, port_quat, cable_tip_frame):
         """
@@ -289,16 +232,17 @@ class VisionBasedUniversalPlugIn(Policy):
         # --- DEINE PRÄZISIONS-WERTE AUS DEM LOG (CABLE TO TCP) ---
         # Position
         if port_type == 'sc':
-            off_x = 0.0
-            off_y = 0.015385
-            off_z = -0.04045
+
+            # Position
+            off_x = 0.005327
+            off_y = -0.000874
+            off_z = -0.01194
             
             # Rotation (Quaternion xyzw)
             off_qx = 0.1608
             off_qy = -0.167181
             off_qz = 0.69417
             off_qw = -0.6814
-            
 
         # Gripper Offset-Werte aus trial 1
         elif port_type == 'sfp':
@@ -371,15 +315,12 @@ class VisionBasedUniversalPlugIn(Policy):
         pp, pq = target_port["pos"], target_port["quat"]
         self.get_logger().info(f"ERKANNT: Port {target_id} bei Base-Link: Pos={pp}, Quat={pq}")
 
+        # cable_tip_frame = cfg['cable_tip_frame']
+        # self.get_logger().info(f"Berechne TCP-Ziel für {cable_tip_frame} auf Port {target_id}")
+        # tcp_pos, tcp_quat = self._get_tcp_goal_pose(target_port["pos"], target_port["quat"], cable_tip_frame)
+        # self.get_logger().info(f"BERECHNET: TCP Ziel-Pose mit Ground truth: Pos={tcp_pos}, Quat={tcp_quat}")
 
-        cable_tip_frame = cfg['cable_tip_frame']
-
-        self.get_logger().info(f"Berechne TCP-Ziel für {cable_tip_frame} auf Port {target_id}")
-        tcp_pos, tcp_quat = self._get_tcp_goal_pose(target_port["pos"], target_port["quat"], cable_tip_frame)
-
-        # # self.get_logger().info(f"BERECHNET: TCP Ziel-Pose mit Ground truth: Pos={tcp_pos}, Quat={tcp_quat}")
-        # tcp_pos, tcp_quat = self._get_tcp_goal_pose_hardcoded(target_port["pos"], target_port["quat"], c_type)
-
+        tcp_pos, tcp_quat = self._get_tcp_goal_pose_hardcoded(target_port["pos"], target_port["quat"], c_type)
         self.get_logger().info(f"BERECHNET: TCP Ziel-Pose ohne Ground truth: Pos={tcp_pos}, Quat={tcp_quat}")
 
         # 4. Ausführung
@@ -388,17 +329,39 @@ class VisionBasedUniversalPlugIn(Policy):
         # Schritt A: Approach (Über dem Port)
         approach_pos = tcp_pos.copy()
         approach_pos[2] += cfg['z_approach']
-        self._move_tcp_to_pose(approach_pos, tcp_quat, move_robot, get_observation, [220.0]*6, [200.0]*6, label="Approach")
 
-        # Schritt B: Versteifen
-        self._move_tcp_to_pose(approach_pos, tcp_quat, move_robot, get_observation, [420.0]*6, [200.0]*6, label="Stiffening")
-
-        # Schritt C: Einstecken
         plug_pos = tcp_pos.copy()
         plug_pos[2] += cfg['z_plug']
-        self._move_tcp_to_pose(plug_pos, tcp_quat, move_robot, get_observation, [420.0, 420.0, 180.0, 420.0, 420.0, 420.0], [100.0]*6, label="Plug-In")
+
+        # Phase 1: Sanft zum Approach (wie GentleGiant - niedrig + gedämpft)
+        self._move_tcp_smooth_cartesian(
+            approach_pos, tcp_quat, move_robot, get_observation,
+            stiffness=[150.0, 150.0, 150.0, 80.0, 80.0, 80.0],
+            damping=[40.0,  40.0,  40.0,  20.0, 20.0, 20.0],
+            n_steps=60,
+            label="Approach"
+        )
+
+        # Phase 2: Versteifen OHNE Bewegung (einregeln lassen)
+        self._move_tcp_smooth_cartesian(
+            approach_pos, tcp_quat, move_robot, get_observation,
+            stiffness=[400.0]*6,
+            damping=[50.0]*6,
+            n_steps=20,          # kurz, nur zum Einregeln
+            label="Stiffening"
+        )
+
+        # Phase 3: Einstecken - XY steif führen, Z weich nachgeben
+        dist = self._move_tcp_smooth_cartesian(
+            plug_pos, tcp_quat, move_robot, get_observation,
+            stiffness=[300.0, 300.0,  80.0, 300.0, 300.0, 300.0],
+            damping=[ 40.0,  40.0,  15.0,  40.0,  40.0,  40.0],
+            n_steps=80,
+            label="Plug-In"
+        )
 
         self.get_logger().info("============================================================")
         self.get_logger().info(f"TASK ERFOLGREICH BEENDET ({c_type})")
         self.get_logger().info("============================================================")
+
         return True
