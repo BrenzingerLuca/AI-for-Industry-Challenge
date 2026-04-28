@@ -27,14 +27,14 @@ class VisionBasedUniversalPlugIn(Policy):
         # Die Keys ('sc', 'sfp') entsprechen task.cable_type
         self._configs = {
             'sc': {
-                'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
+                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
                 'off_pos': [0.005327, -0.000874, -0.01194],
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
                 'z_approach': 0.01, # 1cm über dem Port
                 'z_plug': -0.04     # 4cm tief rein
             },
             'sfp': {
-                'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt",
+                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/best150.pt",
                 'off_pos': [0.0004576051855596508, -0.00017897008773293255, -0.05107300646397306],
                 'off_quat': [0.17961162465395691, 0.005559995963849536, -0.02746131717311321, -0.9833385029246792],
                 'z_approach': 0.01,

@@ -33,7 +33,7 @@ class VisionBasedSCPlugIn(Policy):
     ########################################################################################################### port detection
     def _init_yolo_model(self):
         # Reduziert auf den verifizierten Pfad
-        model_path = "/home/lucab/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt"
+        model_path = "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt"
         self.get_logger().info(f"Lade YOLO Modell: {model_path}")
         self._model = YOLO(model_path)
 
