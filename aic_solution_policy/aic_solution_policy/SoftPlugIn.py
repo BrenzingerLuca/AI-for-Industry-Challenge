@@ -20,7 +20,7 @@ class SoftPlugIn(Policy):
         from cv_bridge import CvBridge
 
         self.get_logger().info("UniversalVisionPlugIn mit erweiterten Debug-Infos initialisiert.")
-        self._tare_client = self._parent_node.create_client(Trigger, '/aic_controller/tare_force_torque_sensor')
+        #self._tare_client = self._parent_node.create_client(Trigger, '/aic_controller/tare_force_torque_sensor')
         self._bridge = CvBridge()
         self._camera_names = ['left', 'center', 'right']
         self._cam_intrinsics = {}
@@ -28,7 +28,7 @@ class SoftPlugIn(Policy):
         self._configs = {
             'sc': {
                 'model_path': "/models/single_sc_detection.pt", #this model path is used for the docker
-                #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
+                #'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
                 'off_pos': [0.0, -0.015385, -0.04045],
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
                 'z_approach': 0.01,
@@ -37,7 +37,7 @@ class SoftPlugIn(Policy):
             },
             'sfp': {
                 'model_path': "/models/best150.pt",
-                #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt",
+                #'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/best150.pt",
                 'off_pos': [0.0, -0.015385, -0.04245],
                 'off_quat': [0.179611, 0.005559, -0.027461, -0.983338],
                 'z_approach': 0.01,
@@ -164,7 +164,7 @@ class SoftPlugIn(Policy):
         for i in range(n_steps):
             move_robot(motion_update=motion_update)
             obs = get_observation()
-            self._check_force_threshold(obs)
+            #self._check_force_threshold(obs)
 
             curr = obs.controller_state.tcp_pose.position
             dist = math.sqrt(
@@ -284,7 +284,7 @@ class SoftPlugIn(Policy):
         self.get_logger().info("============================================================")
 
         send_feedback("Taring force sensor...")
-        self._call_tare_service()
+        #self._call_tare_service()
 
         c_type = task.port_type.lower()
         if c_type not in self._configs:
