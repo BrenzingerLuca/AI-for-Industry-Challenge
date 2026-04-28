@@ -15,7 +15,7 @@ from aic_model.policy import (
 )
 from std_srvs.srv import Trigger
 
-class VisionBasedUniversalPlugIn(Policy):
+class SpiralSearchTest(Policy):
     def __init__(self, parent_node):
         super().__init__(parent_node)
         self.get_logger().info("UniversalVisionPlugIn mit erweiterten Debug-Infos initialisiert.")
@@ -26,19 +26,21 @@ class VisionBasedUniversalPlugIn(Policy):
         
         self._configs = {
             'sc': {
-                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
-                'off_pos': [0.005327, -0.000874, -0.01194],
+                #'model_path': "/models/single_sc_detection.pt",
+                'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
+                'off_pos': [0.0, -0.015385, -0.04045],
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
                 'z_approach': 0.01,
                 'z_plug': -0.04,
                 'cable_tip_frame': "cable_0/sc_tip_link"
             },
             'sfp': {
-                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/best150.pt",
-                'off_pos': [0.0004576051855596508, -0.00017897008773293255, -0.05107300646397306],
-                'off_quat': [0.17961162465395691, 0.005559995963849536, -0.02746131717311321, -0.9833385029246792],
+                #'model_path': "/models/best150.pt",
+                'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt",
+                'off_pos': [0.0, -0.015385, -0.04245],
+                'off_quat': [0.179611, 0.005559, -0.027461, -0.983338],
                 'z_approach': 0.01,
-                'z_plug': -0.05,
+                'z_plug': -0.045,
                 'cable_tip_frame': "cable_0/sfp_tip_link"
             }
         }
@@ -179,66 +181,59 @@ class VisionBasedUniversalPlugIn(Policy):
             self.get_logger().error(f"Tare fehlgeschlagen: {result.message}")
             return False
     ######################################################################################
-    ######################################################################################
-    # def _debug_print_obs_structure(self, obs):
-    #     """Hilfsfunktion, um die Struktur von obs im Log zu analysieren."""
-    #     self.get_logger().info("--- DEBUG: Struktur von 'obs' ---")
-    #     # Zeige alle Haupt-Attribute
-    #     attributes = [attr for attr in dir(obs) if not attr.startswith('_')]
-    #     self.get_logger().info(f"Attribute in obs: {attributes}")
 
-    #     if hasattr(obs, 'controller_state'):
-    #         self.get_logger().info("--- DEBUG: Struktur von 'obs.controller_state' ---")
-    #         cs_attrs = [attr for attr in dir(obs.controller_state) if not attr.startswith('_')]
-    #         self.get_logger().info(f"Attribute in controller_state: {cs_attrs}")
-            
-    #         # Falls 'wrench' existiert, schauen wir tiefer rein
-    #         if hasattr(obs.controller_state, 'wrench'):
-    #             w = obs.controller_state.wrench
-    #             self.get_logger().info(f"Typ von wrench: {type(w)}")
-    #             # Oft ist es ein WrenchStamped, dann hat es .wrench
-    #             if hasattr(w, 'wrench'):
-    #                 self.get_logger().info(f"Kraft-Werte aktuell: x={w.wrench.force.x}, y={w.wrench.force.y}, z={w.wrench.force.z}")
-    #     self.get_logger().info("---------------------------------")
-
-    ############################################################################################# Debug
     # --- Bewegungssteuerung mit Debugging ---
-    def _move_tcp_to_pose(self, pos, quat, move_robot, get_observation, stiffness, damping, label="Target"):
+    def _move_tcp_smooth_cartesian(self, pos, quat, move_robot, get_observation, stiffness, damping, n_steps=80, label="Target"):
+        """
+        Sendet konstant die Zielpose mit niedriger Steifigkeit.
+        Der Impedanzregler konvergiert selbst sanft → wenig Jerk.
+        """
         motion_update = MotionUpdate()
         motion_update.header.frame_id = "base_link"
-        motion_update.trajectory_generation_mode.mode = 2 
-        motion_update.pose.position.x, motion_update.pose.position.y, motion_update.pose.position.z = map(float, pos)
-        motion_update.pose.orientation.x, motion_update.pose.orientation.y, motion_update.pose.orientation.z, motion_update.pose.orientation.w = map(float, quat)
-        
+        motion_update.trajectory_generation_mode.mode = 2
+
+        motion_update.pose.position.x = float(pos[0])
+        motion_update.pose.position.y = float(pos[1])
+        motion_update.pose.position.z = float(pos[2])
+        motion_update.pose.orientation.x = float(quat[0])
+        motion_update.pose.orientation.y = float(quat[1])
+        motion_update.pose.orientation.z = float(quat[2])
+        motion_update.pose.orientation.w = float(quat[3])
+
         mat_stiff = [0.0] * 36
-        mat_damp = [0.0] * 36
-        for i in range(6): 
-            mat_stiff[i*6+i] = float(stiffness[i])
-            mat_damp[i*6+i] = float(damping[i])
+        mat_damp  = [0.0] * 36
+
+        for j in range(6):
+            mat_stiff[j*6+j] = float(stiffness[j])
+            mat_damp[j*6+j]  = float(damping[j])
+
         motion_update.target_stiffness = mat_stiff
-        motion_update.target_damping = mat_damp
+        motion_update.target_damping   = mat_damp
 
-        self.get_logger().info(f"==> Fahre {label} an: P=[{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}]")
+        self.get_logger().info(f"==> Fahre {label} an (smooth): P=[{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}]")
 
-        for i in range(100):
+        dist = float('inf')
+        for i in range(n_steps):
             move_robot(motion_update=motion_update)
             obs = get_observation()
             self._check_force_threshold(obs)
+
             curr = obs.controller_state.tcp_pose.position
-            
-            # Fehlerberechnung (Euklidische Distanz)
-            dist = math.sqrt((curr.x - pos[0])**2 + (curr.y - pos[1])**2 + (curr.z - pos[2])**2)
-            
-            if dist < 0.0005: # 0.5mm Schwellwert
-                self.get_logger().info(f"    Ziel erreicht! Restfehler: {dist*1000:.3f} mm")
-                return
-            
+            dist = math.sqrt(
+                (curr.x - pos[0])**2 +
+                (curr.y - pos[1])**2 +
+                (curr.z - pos[2])**2
+            )
+
             if i % 25 == 0:
                 self.get_logger().info(f"    [{i}] Distanz zu {label}: {dist*1000:.2f} mm")
-            
-            self.sleep_for(0.05)
-        
-        self.get_logger().warning(f"    Timeout! Restfehler: {dist*1000:.3f} mm")
+                if dist < 0.001: # 0.5mm Schwellwert
+                    self.get_logger().info(f"    Ziel erreicht! Restfehler: {dist*1000:.3f} mm")
+                    return dist
+
+            self.sleep_for(0.1)
+        self.get_logger().info(f"    [{label}] Fertig. Restfehler: {dist*1000:.3f} mm")
+        return dist
 
     def _get_tcp_goal_pose(self, port_pos, port_quat, cable_tip_frame):
         """
@@ -289,16 +284,17 @@ class VisionBasedUniversalPlugIn(Policy):
         # --- DEINE PRÄZISIONS-WERTE AUS DEM LOG (CABLE TO TCP) ---
         # Position
         if port_type == 'sc':
-            off_x = 0.0
-            off_y = 0.015385
-            off_z = -0.04045
+
+            # Position
+            off_x = 0.005327
+            off_y = -0.000874
+            off_z = -0.01194
             
             # Rotation (Quaternion xyzw)
             off_qx = 0.1608
             off_qy = -0.167181
             off_qz = 0.69417
             off_qw = -0.6814
-            
 
         # Gripper Offset-Werte aus trial 1
         elif port_type == 'sfp':
@@ -330,6 +326,87 @@ class VisionBasedUniversalPlugIn(Policy):
         target_quat = R.from_matrix(target_matrix[:3, :3]).as_quat()
         
         return target_pos, target_quat
+
+    def _spiral_search_and_insert(self, center_pos, quat, move_robot, get_observation,
+                               max_radius=0.003,
+                               n_turns=5,
+                               steps=120,
+                               label="Spiral"):
+        """
+        Fährt eine Spirale in XY auf fixer Z-Höhe (center_pos).
+        Niedrige Z-Steifigkeit sorgt dafür dass der Stecker automatisch
+        reinrutscht sobald XY über der Öffnung ist.
+        """
+        stiff_spiral = [300.0, 300.0, 80.0, 200.0, 200.0, 200.0]
+        damp_spiral  = [ 40.0,  40.0, 15.0,  30.0,  30.0,  30.0]
+
+        self.get_logger().info(f"==> Starte Spiralsuche für {label} | max_radius={max_radius*1000:.1f}mm | turns={n_turns} | steps={steps}")
+
+        t_vals = np.linspace(0, n_turns * 2 * np.pi, steps)
+
+        for idx, t in enumerate(t_vals):
+            r = (t / (n_turns * 2 * np.pi)) * max_radius
+            dx = r * np.cos(t)
+            dy = r * np.sin(t)
+
+            search_pos = center_pos.copy()
+            search_pos[0] += dx
+            search_pos[1] += dy
+            # Z bleibt fix auf center_pos[2]
+
+            motion_update = self._build_motion_update(search_pos, quat, stiff_spiral, damp_spiral)
+            move_robot(motion_update=motion_update)
+
+            obs = get_observation()
+            self._check_force_threshold(obs)
+
+            curr = obs.controller_state.tcp_pose.position
+            dist = math.sqrt(
+                (curr.x - search_pos[0])**2 +
+                (curr.y - search_pos[1])**2 +
+                (curr.z - center_pos[2])**2  # Z immer gegen center_pos messen
+            )
+
+            if idx % 20 == 0:
+                self.get_logger().info(f"    [{idx}/{steps}] r={r*1000:.2f}mm | dx={dx*1000:.1f}mm dy={dy*1000:.1f}mm | dist={dist*1000:.2f}mm")
+
+            self.sleep_for(0.05)
+
+        # Am Ende Restfehler gegen originale center_pos messen
+        obs = get_observation()
+        curr = obs.controller_state.tcp_pose.position
+        final_dist = math.sqrt(
+            (curr.x - center_pos[0])**2 +
+            (curr.y - center_pos[1])**2 +
+            (curr.z - center_pos[2])**2
+        )
+
+        self.get_logger().info(f"    [{label}] Spiralsuche fertig. Restfehler zu center: {final_dist*1000:.2f}mm")
+        return final_dist
+
+    def _build_motion_update(self, pos, quat, stiffness, damping):
+        """Helper: MotionUpdate aus pos/quat/stiffness/damping bauen."""
+        motion_update = MotionUpdate()
+        motion_update.header.frame_id = "base_link"
+        motion_update.trajectory_generation_mode.mode = 2
+
+        motion_update.pose.position.x = float(pos[0])
+        motion_update.pose.position.y = float(pos[1])
+        motion_update.pose.position.z = float(pos[2])
+        motion_update.pose.orientation.x = float(quat[0])
+        motion_update.pose.orientation.y = float(quat[1])
+        motion_update.pose.orientation.z = float(quat[2])
+        motion_update.pose.orientation.w = float(quat[3])
+
+        mat_stiff = [0.0] * 36
+        mat_damp  = [0.0] * 36
+        for j in range(6):
+            mat_stiff[j*6+j] = float(stiffness[j])
+            mat_damp[j*6+j]  = float(damping[j])
+        motion_update.target_stiffness = mat_stiff
+        motion_update.target_damping   = mat_damp
+
+        return motion_update
 
     # --- Main ---
     def insert_cable(self, task: Task, get_observation: GetObservationCallback, move_robot: MoveRobotCallback, send_feedback: SendFeedbackCallback):
@@ -371,14 +448,33 @@ class VisionBasedUniversalPlugIn(Policy):
         pp, pq = target_port["pos"], target_port["quat"]
         self.get_logger().info(f"ERKANNT: Port {target_id} bei Base-Link: Pos={pp}, Quat={pq}")
 
-
         cable_tip_frame = cfg['cable_tip_frame']
 
-        self.get_logger().info(f"Berechne TCP-Ziel für {cable_tip_frame} auf Port {target_id}")
-        tcp_pos, tcp_quat = self._get_tcp_goal_pose(target_port["pos"], target_port["quat"], cable_tip_frame)
+        # self.get_logger().info(f"Berechne TCP-Ziel für {cable_tip_frame} auf Port {target_id}")
+        # tcp_pos, tcp_quat = self._get_tcp_goal_pose(target_port["pos"], target_port["quat"], cable_tip_frame)
 
-        # # self.get_logger().info(f"BERECHNET: TCP Ziel-Pose mit Ground truth: Pos={tcp_pos}, Quat={tcp_quat}")
-        # tcp_pos, tcp_quat = self._get_tcp_goal_pose_hardcoded(target_port["pos"], target_port["quat"], c_type)
+        # self.get_logger().info(f"BERECHNET: TCP Ziel-Pose mit Ground truth: Pos={tcp_pos}, Quat={tcp_quat}")
+        tcp_pos, tcp_quat = self._get_tcp_goal_pose_hardcoded(target_port["pos"], target_port["quat"], c_type)
+
+        # dy = np.random.uniform(-0.002, 0.002)
+        # dz = np.random.uniform(-0.002, 0.002)
+
+        dy = 0.002
+        dz = 0.002
+
+        self.get_logger().info(f"Addierte Ungenauigkeit Y: {dz} Z: {dz}")
+
+        # Rotationsrauschen als kleine Euler-Störung
+        d_rot = R.from_euler('xyz', [
+            np.random.uniform(-0.04, 0.04),  # roll
+            np.random.uniform(-0.04, 0.04),  # pitch
+            np.random.uniform(-0.04, 0.04),  # yaw
+        ])
+
+        tcp_pos[1] += dy
+        tcp_pos[2] += dz
+
+        tcp_quat = (R.from_quat(tcp_quat) * d_rot).as_quat()
 
         self.get_logger().info(f"BERECHNET: TCP Ziel-Pose ohne Ground truth: Pos={tcp_pos}, Quat={tcp_quat}")
 
@@ -388,17 +484,53 @@ class VisionBasedUniversalPlugIn(Policy):
         # Schritt A: Approach (Über dem Port)
         approach_pos = tcp_pos.copy()
         approach_pos[2] += cfg['z_approach']
-        self._move_tcp_to_pose(approach_pos, tcp_quat, move_robot, get_observation, [220.0]*6, [200.0]*6, label="Approach")
 
-        # Schritt B: Versteifen
-        self._move_tcp_to_pose(approach_pos, tcp_quat, move_robot, get_observation, [420.0]*6, [200.0]*6, label="Stiffening")
-
-        # Schritt C: Einstecken
         plug_pos = tcp_pos.copy()
         plug_pos[2] += cfg['z_plug']
-        self._move_tcp_to_pose(plug_pos, tcp_quat, move_robot, get_observation, [420.0, 420.0, 180.0, 420.0, 420.0, 420.0], [100.0]*6, label="Plug-In")
 
-        self.get_logger().info("============================================================")
-        self.get_logger().info(f"TASK ERFOLGREICH BEENDET ({c_type})")
-        self.get_logger().info("============================================================")
+        # Phase 1: Sanft zum Approach (wie GentleGiant - niedrig + gedämpft)
+        self._move_tcp_smooth_cartesian(
+            approach_pos, tcp_quat, move_robot, get_observation,
+            stiffness=[150.0, 150.0, 150.0, 80.0, 80.0, 80.0],
+            damping=[40.0,  40.0,  40.0,  20.0, 20.0, 20.0],
+            n_steps=60,
+            label="Approach"
+        )
+
+        # Phase 2: Versteifen OHNE Bewegung (einregeln lassen)
+        self._move_tcp_smooth_cartesian(
+            approach_pos, tcp_quat, move_robot, get_observation,
+            stiffness=[400.0]*6,
+            damping=[50.0]*6,
+            n_steps=20,          # kurz, nur zum Einregeln
+            label="Stiffening"
+        )
+
+        # if dist > 0.020:  # > 2cm → Spiralsuche
+        # self.get_logger().info(f"Restfehler {dist*1000:.1f}mm > 20mm → Starte Spiralsuche")
+        final_dist = self._spiral_search_and_insert(
+            center_pos=plug_pos,
+            quat=tcp_quat,
+            move_robot=move_robot,
+            get_observation=get_observation,
+            max_radius=0.008,
+            label=c_type
+        )
+        
+        if final_dist < 0.001:
+            self.get_logger().info("============================================================")
+            self.get_logger().info(f"TASK ERFOLGREICH BEENDET ({c_type})")
+            self.get_logger().info("============================================================")
+            return True
+
+        else:
+            final_plug_position = plug_pos.copy()
+            final_plug_position[2] -= 0.01 
+            self._move_tcp_smooth_cartesian(
+            final_plug_position, tcp_quat, move_robot, get_observation,
+            stiffness=[300.0, 300.0,  80.0, 300.0, 300.0, 300.0],
+            damping=[ 40.0,  40.0,  15.0,  40.0,  40.0,  40.0],
+            n_steps=80,
+            label="Plug-In"
+        )
         return True
