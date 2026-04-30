@@ -1,8 +1,6 @@
 import numpy as np
 import math
 from scipy.spatial.transform import Rotation as R
-from cv_bridge import CvBridge
-from ultralytics import YOLO
 from rclpy.duration import Duration
 from aic_control_interfaces.msg import MotionUpdate
 from aic_task_interfaces.msg import Task
@@ -19,6 +17,9 @@ class PlugIn(Policy):
     def __init__(self, parent_node):
         super().__init__(parent_node)
 
+        from cv_bridge import CvBridge
+        from ultralytics import YOLO
+
         self.get_logger().info("PlugIn Policy initialised")
         self._bridge = CvBridge()
         self._camera_names = ['left', 'center', 'right']
@@ -31,7 +32,8 @@ class PlugIn(Policy):
                 #'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
                 'off_pos': [0.0, -0.015385, -0.04045],
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
-                'z_approach': 0.03,
+                'z_approach_1': 0.03,
+                'z_approach_2': 0.005,
                 'z_plug': -0.05,
                 'cable_tip_frame': "cable_0/sc_tip_link"
             },
@@ -654,28 +656,43 @@ class PlugIn(Policy):
         # Send Feedback about starting the insertion process
         send_feedback(f"Starting {c_type} insertion...")
 
-        # 5. Calculate approach pose (same XY, but Z raised by approach offset)
-        approach_pos = tcp_pos.copy()
-        approach_pos[2] += cfg['z_approach']
+        # 5. Calculate approach pose(s) (same XY, but Z raised by approach offset)
+        # Support either a single-stage approach (z_approach) or a two-stage approach (z_approach_1, z_approach_2)
+        approach_poses = []
+        if 'z_approach_1' in cfg and 'z_approach_2' in cfg:
+            approach_pos_1 = tcp_pos.copy()
+            approach_pos_1[2] += cfg['z_approach_1']
+            approach_poses.append((approach_pos_1, "Approach-1"))
+
+            approach_pos_2 = tcp_pos.copy()
+            approach_pos_2[2] += cfg['z_approach_2']
+            approach_poses.append((approach_pos_2, "Approach-2"))
+        else:
+            approach_pos = tcp_pos.copy()
+            approach_pos[2] += cfg['z_approach']
+            approach_poses.append((approach_pos, "Approach"))
 
         # 6. Calculate plug position for later use in spiral search (same XY, but Z at plug depth)
         plug_pos = tcp_pos.copy()
         plug_pos[2] += cfg['z_plug']
 
-        # 7.1 Move to approach pose (smoothly, with low stiffness)
-        self._move_tcp_smooth_cartesian(
-            approach_pos, tcp_quat, move_robot, get_observation,
-            stiffness=[150.0, 150.0, 150.0, 80.0, 80.0, 80.0],
-            damping=[40.0,  40.0,  40.0,  20.0, 20.0, 20.0],
-            n_steps=60,
-            label="Approach",
-            obs=obs,
-            debug_port_type=c_type
-        )
+        # 7.1 Move to approach pose(s) (smoothly, with low stiffness)
+        last_approach_pos = None
+        for approach_pos, approach_label in approach_poses:
+            last_approach_pos = approach_pos
+            self._move_tcp_smooth_cartesian(
+                approach_pos, tcp_quat, move_robot, get_observation,
+                stiffness=[150.0, 150.0, 150.0, 80.0, 80.0, 80.0],
+                damping=[40.0,  40.0,  40.0,  20.0, 20.0, 20.0],
+                n_steps=60,
+                label=approach_label,
+                obs=obs,
+                debug_port_type=c_type
+            )
 
         # 7.2 Increase stiffness for better allignemt before spiral search
         self._move_tcp_smooth_cartesian(
-            approach_pos, tcp_quat, move_robot, get_observation,
+            last_approach_pos, tcp_quat, move_robot, get_observation,
             stiffness=[400.0]*6,
             damping=[50.0]*6,
             n_steps=20,          # kurz, nur zum Einregeln
@@ -690,14 +707,14 @@ class PlugIn(Policy):
             quat=tcp_quat,
             move_robot=move_robot,
             get_observation=get_observation,
-            max_radius=0.003,
+            max_radius=0.005,
             label=c_type,
             obs=obs,
             debug_port_type=c_type
         )
         
         # 9. Check final distance to plug position after spiral search
-        if final_dist < 1.0:
+        if final_dist < 0.03:
             self.get_logger().info("============================================================")
             self.get_logger().info(f"SUCCESS - Inserted:({c_type})")
             self.get_logger().info("============================================================")
@@ -709,10 +726,78 @@ class PlugIn(Policy):
             final_plug_position[2] -= 0.01 
             self._move_tcp_smooth_cartesian(
             final_plug_position, tcp_quat, move_robot, get_observation,
-            stiffness=[300.0, 300.0,  80.0, 300.0, 300.0, 300.0],
+            stiffness=[100.0, 100.0,  80.0, 300.0, 300.0, 300.0],
             damping=[ 40.0,  40.0,  15.0,  40.0,  40.0,  40.0],
             n_steps=80,
             label="Plug-In",
             obs=obs,
             debug_port_type=c_type
         )
+
+        # 11 Final Check
+        obs = get_observation()
+        curr = obs.controller_state.tcp_pose.position
+        final_dist = math.sqrt(
+            (curr.x - plug_pos[0])**2 +
+            (curr.y - plug_pos[1])**2 +
+            (curr.z - plug_pos[2])**2
+        )
+
+        if final_dist < 0.03:
+            self.get_logger().info("============================================================")
+            self.get_logger().info(f"SUCCESS - Inserted on second try:({c_type}) | Final distance: {final_dist*1000:.2f}mm")
+            self.get_logger().info("============================================================")
+            return True
+        else:
+            # 12 Spiral Search and Insert with larger radius and 
+            final_dist = self._spiral_search_and_insert(
+                center_pos=plug_pos,
+                quat=tcp_quat,
+                move_robot=move_robot,
+                get_observation=get_observation,
+                max_radius=0.007,
+                label=c_type,
+                obs=obs,
+                debug_port_type=c_type
+            )
+
+        # 13 Force insert again
+        if final_dist < 0.03:
+            self.get_logger().info("============================================================")
+            self.get_logger().info(f"SUCCESS - Inserted:({c_type})")
+            self.get_logger().info("============================================================")
+            return True
+
+        # 13. If not successful, try to move down to plug position with low stiffness (slipping in)
+        else:
+            final_plug_position = plug_pos.copy()
+            final_plug_position[2] -= 0.01 
+            self._move_tcp_smooth_cartesian(
+            final_plug_position, tcp_quat, move_robot, get_observation,
+            stiffness=[100.0, 100.0,  80.0, 300.0, 300.0, 300.0],
+            damping=[ 40.0,  40.0,  15.0,  40.0,  40.0,  40.0],
+            n_steps=80,
+            label="Plug-In",
+            obs=obs,
+            debug_port_type=c_type
+        )
+            
+        # 14 Final Check
+        obs = get_observation()
+        curr = obs.controller_state.tcp_pose.position
+        final_dist = math.sqrt(
+            (curr.x - plug_pos[0])**2 +
+            (curr.y - plug_pos[1])**2 +
+            (curr.z - plug_pos[2])**2
+        )
+
+        if final_dist < 0.1:
+            self.get_logger().info("============================================================")
+            self.get_logger().info(f"SUCCESS - Inserted on second try:({c_type}) | Final distance: {final_dist*1000:.2f}mm")
+            self.get_logger().info("============================================================")
+            return True
+        else:
+            self.get_logger().info("============================================================")
+            self.get_logger().info(f"FAILED - Could not insert:({c_type}) | Final distance: {final_dist*1000:.2f}mm")
+            self.get_logger().info("============================================================")
+            return False
