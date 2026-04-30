@@ -26,19 +26,19 @@ class PlugIn(Policy):
         
         self._configs = {
             'sc': {
-                #'model_path': "/models/single_sc_detection.pt",
+                'model_path': "/models/single_sc_detection.pt",
                 #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
-                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
+                #'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
                 'off_pos': [0.0, -0.015385, -0.04045],
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
-                'z_approach': 0.01,
-                'z_plug': -0.04,
+                'z_approach': 0.03,
+                'z_plug': -0.05,
                 'cable_tip_frame': "cable_0/sc_tip_link"
             },
             'sfp': {
-                #'model_path': "/models/best150.pt",
+                'model_path': "/models/best150.pt",
                 #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt",
-                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/best150.pt",
+                #'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/best150.pt",
                 'off_pos': [0.0, -0.015385, -0.04245],
                 'off_quat': [0.179611, 0.005559, -0.027461, -0.983338],
                 'z_approach': 0.01,
@@ -169,9 +169,17 @@ class PlugIn(Policy):
             pass
         return False
     
+        
 
     # --- Motion Control ---
-    def _move_tcp_smooth_cartesian(self, pos, quat, move_robot, get_observation, stiffness, damping, n_steps=80, label="Target"):
+    def _move_tcp_smooth_cartesian(self, pos, quat,
+                                    move_robot, 
+                                    get_observation, 
+                                    stiffness, damping, 
+                                    n_steps=80, 
+                                    label="Target", 
+                                    obs=None,
+                                    debug_port_type=None):
         """
         Soft Cartesian movement
         1. set motion_update with target pose and stiffness/damping
@@ -228,6 +236,11 @@ class PlugIn(Policy):
 
             self.sleep_for(0.1)
         self.get_logger().info(f"    [{label}] Fertig. Restfehler: {dist*1000:.3f} mm")
+
+        # ---DEBUG Tip Offset Check---
+        if debug_port_type is not None:
+            self._check_tip_offset(obs=obs, port_type=debug_port_type)
+        
         return dist
 
     def _get_tcp_goal_pose(self, port_pos, port_quat, cable_tip_frame):
@@ -283,31 +296,8 @@ class PlugIn(Policy):
             - C: Calculate Target TCP Pose
 
         """
-        # 1. Define fixed offset for sc and sfp
-        # sc
-        if port_type == 'sc':
-
-            # Position
-            off_x = 0.005327
-            off_y = -0.000874
-            off_z = -0.01194
-            
-            # Rotation (Quaternion xyzw)
-            off_qx = 0.1608
-            off_qy = -0.167181
-            off_qz = 0.69417
-            off_qw = -0.6814
-
-        # sfp
-        elif port_type == 'sfp':
-            off_x = 0.0
-            off_y = 0.0004
-            off_z = -0.05795
-
-            off_qx = 0.17785
-            off_qy = 0.00505
-            off_qz = -0.02738
-            off_qw = -0.98366
+        # 1. Define fixed offset (Tip -> TCP)
+        off_t, off_q = self._get_tip_to_tcp_offset_hardcoded(port_type)
 
 
         # 2. Transformations
@@ -318,22 +308,185 @@ class PlugIn(Policy):
         
         # B: Transformation Cable Tip -> TCP (from hardcoded offsets)
         mat_cable_to_tcp = np.eye(4)
-        mat_cable_to_tcp[:3, :3] = R.from_quat([off_qx, off_qy, off_qz, off_qw]).as_matrix()
-        mat_cable_to_tcp[:3, 3] = [off_x, off_y, off_z]
+        mat_cable_to_tcp[:3, :3] = R.from_quat(off_q).as_matrix()
+        mat_cable_to_tcp[:3, 3] = off_t
         
         # C: Calculate Target TCP Pose
         target_matrix = mat_base_to_port @ mat_cable_to_tcp
         
         target_pos = target_matrix[:3, 3]
         target_quat = R.from_matrix(target_matrix[:3, :3]).as_quat()
-        
+
         return target_pos, target_quat
+
+    def _get_tip_to_tcp_offset_hardcoded(self, port_type):
+        """Hardcoded transform from cable tip frame to gripper/tcp frame.
+
+        Returns:
+            (t, q):
+              - t: np.ndarray shape (3,) translation in meters (Tip -> TCP), expressed in tip frame
+              - q: np.ndarray shape (4,) quaternion xyzw (Tip -> TCP)
+        """
+        if port_type == 'sc':
+            t = np.array([0.005327, -0.000874, -0.01194], dtype=float)
+            q = np.array([0.1608, -0.167181, 0.69417, -0.6814], dtype=float)
+        elif port_type == 'sfp':
+            t = np.array([0.0, 0.0004, -0.05795], dtype=float)
+            q = np.array([0.17785, 0.00505, -0.02738, -0.98366], dtype=float)
+        else:
+            raise ValueError(f"Unknown port_type for hardcoded offset: {port_type}")
+
+        q_norm = float(np.linalg.norm(q))
+        if q_norm > 0:
+            q = q / q_norm
+
+        return t, q
+
+    def _check_tip_offset(self, obs, port_type=None, cable_tip_frame=None):
+        """Debug: validate hardcoded Tip->TCP offset against TF.
+
+        Consistent comparisons:
+        1) Tip->TCP transform: TF vs hardcoded (translation + rotation).
+        2) Base->Tip pose: TF vs computed from observation Base->TCP and hardcoded Tip->TCP.
+        """
+        if obs is None or not hasattr(obs, 'controller_state') or obs.controller_state is None:
+            self.get_logger().warning("DEBUG TIP OFFSET | Missing controller_state in observation")
+            return
+
+        # Resolve port_type / cable_tip_frame
+        if port_type is None:
+            if cable_tip_frame and 'sc' in cable_tip_frame:
+                port_type = 'sc'
+            elif cable_tip_frame and 'sfp' in cable_tip_frame:
+                port_type = 'sfp'
+            else:
+                self.get_logger().warning(f"DEBUG TIP OFFSET | port_type unknown (cable_tip_frame={cable_tip_frame})")
+                return
+
+        if cable_tip_frame is None:
+            cable_tip_frame = self._configs[port_type]['cable_tip_frame']
+
+        # Hardcoded Tip->TCP
+        try:
+            t_h, q_h = self._get_tip_to_tcp_offset_hardcoded(port_type)
+        except Exception as e:
+            self.get_logger().warning(f"DEBUG TIP OFFSET | Hardcoded offset error: {e}")
+            return
+
+        def _quat_angle_deg(q1, q2):
+            q1 = np.asarray(q1, dtype=float)
+            q2 = np.asarray(q2, dtype=float)
+            n1 = float(np.linalg.norm(q1))
+            n2 = float(np.linalg.norm(q2))
+            if n1 == 0 or n2 == 0:
+                return float('nan')
+            q1 = q1 / n1
+            q2 = q2 / n2
+            dot = float(np.clip(abs(np.dot(q1, q2)), 0.0, 1.0))
+            return float(np.degrees(2.0 * np.arccos(dot)))
+
+        # 1) TF Tip->TCP vs hardcoded Tip->TCP
+        t_tf = None
+        q_tf = None
+        try:
+            timeout = Duration(seconds=1.0)
+            tf_tip_to_tcp = self._parent_node._tf_buffer.lookup_transform(
+                cable_tip_frame,
+                "gripper/tcp",
+                Time(),
+                timeout=timeout,
+            )
+            rot = tf_tip_to_tcp.transform.rotation
+            trans = tf_tip_to_tcp.transform.translation
+            t_tf = np.array([trans.x, trans.y, trans.z], dtype=float)
+            q_tf = np.array([rot.x, rot.y, rot.z, rot.w], dtype=float)
+        except Exception as e:
+            self.get_logger().warning(
+                f"DEBUG TIP OFFSET | TF Tip->TCP not available ({cable_tip_frame} -> gripper/tcp): {e}"
+            )
+
+        if t_tf is not None and q_tf is not None:
+            trans_err_mm = float(np.linalg.norm(t_tf - t_h) * 1000.0)
+            rot_err_deg = _quat_angle_deg(q_tf, q_h)
+            self.get_logger().info(
+                "DEBUG TIP OFFSET | Tip->TCP compare"
+                f" | type={port_type} frame={cable_tip_frame}"
+                f" | TF t={t_tf} q={q_tf}"
+                f" | HC t={t_h} q={q_h}"
+                f" | Δt={trans_err_mm:.2f}mm ΔR={rot_err_deg:.2f}deg"
+            )
+        else:
+            self.get_logger().info(
+                "DEBUG TIP OFFSET | Tip->TCP compare"
+                f" | type={port_type} frame={cable_tip_frame}"
+                " | TF unavailable"
+                f" | HC t={t_h} q={q_h}"
+            )
+
+        # 2) Base->Tip pose: TF vs (Base->TCP from obs) * inv(Tip->TCP hardcoded)
+        tcp_pose = obs.controller_state.tcp_pose
+        t_base_tcp = np.array([
+            tcp_pose.position.x,
+            tcp_pose.position.y,
+            tcp_pose.position.z,
+        ], dtype=float)
+        q_base_tcp = np.array([
+            tcp_pose.orientation.x,
+            tcp_pose.orientation.y,
+            tcp_pose.orientation.z,
+            tcp_pose.orientation.w,
+        ], dtype=float)
+        q_base_tcp_norm = float(np.linalg.norm(q_base_tcp))
+        if q_base_tcp_norm == 0:
+            self.get_logger().warning("DEBUG TIP OFFSET | Base->TCP quaternion in obs has zero norm")
+            return
+        q_base_tcp = q_base_tcp / q_base_tcp_norm
+
+        T_base_tcp = np.eye(4)
+        T_base_tcp[:3, :3] = R.from_quat(q_base_tcp).as_matrix()
+        T_base_tcp[:3, 3] = t_base_tcp
+
+        T_tip_tcp_hc = np.eye(4)
+        T_tip_tcp_hc[:3, :3] = R.from_quat(q_h).as_matrix()
+        T_tip_tcp_hc[:3, 3] = t_h
+
+        T_base_tip_hc = T_base_tcp @ np.linalg.inv(T_tip_tcp_hc)
+        t_base_tip_hc = T_base_tip_hc[:3, 3]
+        q_base_tip_hc = R.from_matrix(T_base_tip_hc[:3, :3]).as_quat()
+
+        try:
+            timeout = Duration(seconds=1.0)
+            tf_base_to_tip = self._parent_node._tf_buffer.lookup_transform(
+                "base_link",
+                cable_tip_frame,
+                Time(),
+                timeout=timeout,
+            )
+            trans = tf_base_to_tip.transform.translation
+            rot = tf_base_to_tip.transform.rotation
+            t_base_tip_tf = np.array([trans.x, trans.y, trans.z], dtype=float)
+            q_base_tip_tf = np.array([rot.x, rot.y, rot.z, rot.w], dtype=float)
+
+            tip_pos_err_mm = float(np.linalg.norm(t_base_tip_tf - t_base_tip_hc) * 1000.0)
+            tip_rot_err_deg = _quat_angle_deg(q_base_tip_tf, q_base_tip_hc)
+            self.get_logger().info(
+                "DEBUG TIP OFFSET | Base->Tip compare"
+                f" | TF t={t_base_tip_tf} q={q_base_tip_tf}"
+                f" | HC t={t_base_tip_hc} q={q_base_tip_hc}"
+                f" | Δt={tip_pos_err_mm:.2f}mm ΔR={tip_rot_err_deg:.2f}deg"
+            )
+        except Exception as e:
+            self.get_logger().warning(
+                f"DEBUG TIP OFFSET | TF Base->Tip not available (base_link -> {cable_tip_frame}): {e}"
+            )
 
     def _spiral_search_and_insert(self, center_pos, quat, move_robot, get_observation,
                                max_radius=0.003,
                                n_turns=3,
                                steps=120,
-                               label="Spiral"):
+                               label="Spiral",
+                               obs=None,
+                               debug_port_type=None):
         """
         Moves the TCP in a spiral pattern around center_pos on a fixed Z plane
         - Uses low z stiffness or gentle contact during search
@@ -394,6 +547,12 @@ class PlugIn(Policy):
         )
 
         self.get_logger().info(f"    [{label}] Spiral search done, final distance: {final_dist*1000:.2f}mm")
+
+        # ---DEBUG Tip Offset Check---
+        if debug_port_type is not None:
+            self._check_tip_offset(obs=obs, port_type=debug_port_type)
+
+
         return final_dist
 
     def _build_motion_update(self, pos, quat, stiffness, damping):
@@ -426,6 +585,7 @@ class PlugIn(Policy):
         motion_update.target_damping   = mat_damp
 
         # 3. Return MotionUpdate
+
         return motion_update
 
     # --- Main ---
@@ -508,7 +668,9 @@ class PlugIn(Policy):
             stiffness=[150.0, 150.0, 150.0, 80.0, 80.0, 80.0],
             damping=[40.0,  40.0,  40.0,  20.0, 20.0, 20.0],
             n_steps=60,
-            label="Approach"
+            label="Approach",
+            obs=obs,
+            debug_port_type=c_type
         )
 
         # 7.2 Increase stiffness for better allignemt before spiral search
@@ -517,7 +679,9 @@ class PlugIn(Policy):
             stiffness=[400.0]*6,
             damping=[50.0]*6,
             n_steps=20,          # kurz, nur zum Einregeln
-            label="Stiffening"
+            label="Stiffening",
+            obs=obs,
+            debug_port_type=c_type
         )
 
         # 8. Spiral Search and Insert
@@ -527,7 +691,9 @@ class PlugIn(Policy):
             move_robot=move_robot,
             get_observation=get_observation,
             max_radius=0.003,
-            label=c_type
+            label=c_type,
+            obs=obs,
+            debug_port_type=c_type
         )
         
         # 9. Check final distance to plug position after spiral search
@@ -546,5 +712,7 @@ class PlugIn(Policy):
             stiffness=[300.0, 300.0,  80.0, 300.0, 300.0, 300.0],
             damping=[ 40.0,  40.0,  15.0,  40.0,  40.0,  40.0],
             n_steps=80,
-            label="Plug-In"
+            label="Plug-In",
+            obs=obs,
+            debug_port_type=c_type
         )
