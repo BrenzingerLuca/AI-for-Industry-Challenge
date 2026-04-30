@@ -1,25 +1,19 @@
-"""
-dataset_collector.py - Multi-Camera Dataset Collection Node
- 
-Subscribes to all three robot cameras simultaneously, projects SFP port corners
-from TF into each camera image, and generates YOLO pose labels automatically.
- 
-Press ENTER in the terminal to save the latest frame from all cameras at once.
-Images and labels are saved in the YOLO dataset folder structure:
+"""dataset_collector_multiple_cameras_sc.py - Multi-Camera Dataset Collection Node
+
+This node subscribes to all three robot cameras simultaneously.
+
+Two modes are supported:
+1) Manual labeling mode (default):
+   - Press ENTER to save the latest frame from *all three* cameras.
+   - Only the 3 images are written (no label files), so you can label later by hand.
+
+2) Auto labeling mode:
+   - Projects SFP port corners from TF into each camera image.
+   - Generates YOLO pose labels automatically and writes image + label files.
+
+Output structure:
     <output_path>/images/<filename>.jpg
-    <output_path>/labels/<filename>.txt
- 
-YOLO Pose label format:
-    <class> <cx> <cy> <bw> <bh> <kp1x> <kp1y> <v1> <kp2x> <kp2y> <v2> ...
-    All values normalized to [0, 1]. Visibility flag: 2 = visible.
- 
-Usage:
-    # Inside the pixi environment:
-    python3 dataset_collector_multiple_cameras.py
- 
-Configuration:
-    Edit the CONFIG section below to set camera names, target TF frames,
-    output path, and output filename prefix.
+    <output_path>/labels/<filename>.txt   (only when writing labels)
 """
  
 import rclpy
@@ -43,18 +37,26 @@ from functools import partial
 # =============================================================================
  
 # Output folder where images/ and labels/ subdirectories will be created
-OUTPUT_PATH = "datasets/sc_tip_dataset"
+OUTPUT_PATH = "datasets/sfp_tip_dataset"
  
 # Prefix for saved filenames, e.g. "run1" -> "run1_left_camera_1_....jpg"
 OUTPUT_PREFIX = "img"
  
 # Cameras to subscribe to
 CAMERA_NAMES = ['left_camera', 'center_camera', 'right_camera']
+
+# When True: save only images (no TF projection, no labels written).
+# When False: generate labels from TF and (optionally) write label files.
+MANUAL_LABELING_MODE = True
+
+# Only relevant when MANUAL_LABELING_MODE is False.
+# If True: writes YOLO label text files into OUTPUT_PATH/labels.
+WRITE_LABEL_FILES = True
  
 # TF frames to label, mapped to their YOLO class ID
 # Add or remove frames here to change which ports are labeled
 TARGET_FRAMES = {
-    "cable_0/sc_tip_link": 0
+    "cable_0/sfp_tip_link": 0
    # "task_board/nic_card_mount_0/sfp_port_1_link_entrance": 1,
 }
  
@@ -76,9 +78,10 @@ class MultiCameraDatasetCollector(Node):
  
         self.save_count = 0
  
-        # Create output directories for images and labels
+        # Create output directories
         os.makedirs(f"{OUTPUT_PATH}/images", exist_ok=True)
-        os.makedirs(f"{OUTPUT_PATH}/labels", exist_ok=True)
+        if not MANUAL_LABELING_MODE and WRITE_LABEL_FILES:
+            os.makedirs(f"{OUTPUT_PATH}/labels", exist_ok=True)
  
         # Initialize state for each camera: model, latest frame, label, and debug publisher
         self.camera_states = {}
@@ -105,7 +108,12 @@ class MultiCameraDatasetCollector(Node):
  
         self.get_logger().info("\n--- MULTI-CAM DATASET COLLECTOR READY ---")
         self.get_logger().info(f"Saving to: {OUTPUT_PATH}/  (prefix: '{OUTPUT_PREFIX}')")
-        self.get_logger().info("Press ENTER to save the latest frame from all cameras.")
+        if MANUAL_LABELING_MODE:
+            self.get_logger().info("Mode: MANUAL (images only, label later by hand)")
+            self.get_logger().info("Press ENTER to save the latest frames from all 3 cameras.")
+        else:
+            self.get_logger().info("Mode: AUTO (TF projection -> YOLO labels)")
+            self.get_logger().info("Press ENTER to save the latest frame from all cameras.")
  
     def info_cb(self, msg, cam_name):
         """Store the camera intrinsics when received."""
@@ -122,6 +130,13 @@ class MultiCameraDatasetCollector(Node):
         5. Store the latest raw image and label string for saving on keypress.
         """
         state = self.camera_states[cam_name]
+
+        if MANUAL_LABELING_MODE:
+            img = self.bridge.imgmsg_to_cv2(img_msg, "bgr8")
+            state['latest_image'] = img
+            state['latest_label'] = ""
+            state['pub'].publish(self.bridge.cv2_to_imgmsg(img, "bgr8"))
+            return
  
         # Skip until camera intrinsics have been received
         if not state['info_received'] or state['model'].projection_matrix() is None:
@@ -226,27 +241,42 @@ class MultiCameraDatasetCollector(Node):
             self.save_all_cameras()
  
     def save_all_cameras(self):
-        """Save the latest image and label from every camera that has data."""
+        """Save the latest frames from the three cameras.
+
+        - In manual mode: always saves exactly 3 JPGs (left/center/right) and no labels.
+        - In auto mode: saves JPGs and (optionally) labels; requires non-empty labels.
+        """
+        states = [self.camera_states[cam] for cam in CAMERA_NAMES]
+        if any(state['latest_image'] is None for state in states):
+            print("Not saved — waiting for images from all 3 cameras.")
+            return
+
         self.save_count += 1
         timestamp = int(time.time() * 1000)
+
         saved = []
- 
-        for cam_name, state in self.camera_states.items():
-            if state['latest_image'] is not None and state['latest_label'] != "":
-                img_name = f"{OUTPUT_PREFIX}_{cam_name}_{self.save_count}_{timestamp}.jpg"
-                img_path   = os.path.join(OUTPUT_PATH, "images", img_name)
-                label_path = os.path.join(OUTPUT_PATH, "labels", img_name.replace('.jpg', '.txt'))
- 
-                cv2.imwrite(img_path, state['latest_image'])
+        for cam_name in CAMERA_NAMES:
+            state = self.camera_states[cam_name]
+
+            if not MANUAL_LABELING_MODE:
+                if state['latest_label'] == "":
+                    print(f"Not saved — no valid label for camera '{cam_name}' yet.")
+                    return
+
+            img_name = f"{OUTPUT_PREFIX}_{cam_name}_{self.save_count}_{timestamp}.jpg"
+            img_path = os.path.join(OUTPUT_PATH, "images", img_name)
+            cv2.imwrite(img_path, state['latest_image'])
+
+            if not MANUAL_LABELING_MODE and WRITE_LABEL_FILES:
+                label_path = os.path.join(
+                    OUTPUT_PATH, "labels", img_name.replace('.jpg', '.txt')
+                )
                 with open(label_path, "w") as f:
                     f.write(state['latest_label'])
- 
-                saved.append(cam_name)
- 
-        if saved:
-            print(f"[SAVE {self.save_count}] Saved: {', '.join(saved)}")
-        else:
-            print("Nothing saved — no frames with valid labels available yet.")
+
+            saved.append(cam_name)
+
+        print(f"[SAVE {self.save_count}] Saved images: {', '.join(saved)}")
  
  
 def main():
