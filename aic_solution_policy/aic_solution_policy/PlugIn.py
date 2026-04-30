@@ -15,19 +15,20 @@ from aic_model.policy import (
 )
 from std_srvs.srv import Trigger
 
-class SpiralSearch(Policy):
+class PlugIn(Policy):
     def __init__(self, parent_node):
         super().__init__(parent_node)
-        self.get_logger().info("UniversalVisionPlugIn mit erweiterten Debug-Infos initialisiert.")
-        #self._tare_client = self._parent_node.create_client(Trigger, '/aic_controller/tare_force_torque_sensor')
+
+        self.get_logger().info("PlugIn Policy initialised")
         self._bridge = CvBridge()
         self._camera_names = ['left', 'center', 'right']
         self._cam_intrinsics = {}
         
         self._configs = {
             'sc': {
-                'model_path': "/models/single_sc_detection.pt",
+                #'model_path': "/models/single_sc_detection.pt",
                 #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
+                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
                 'off_pos': [0.0, -0.015385, -0.04045],
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
                 'z_approach': 0.01,
@@ -35,8 +36,9 @@ class SpiralSearch(Policy):
                 'cable_tip_frame': "cable_0/sc_tip_link"
             },
             'sfp': {
-                'model_path': "/models/best150.pt",
+                #'model_path': "/models/best150.pt",
                 #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt",
+                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/best150.pt",
                 'off_pos': [0.0, -0.015385, -0.04245],
                 'off_quat': [0.179611, 0.005559, -0.027461, -0.983338],
                 'z_approach': 0.01,
@@ -45,6 +47,7 @@ class SpiralSearch(Policy):
             }
         }
 
+        # Load Models
         self._models = {}
         for c_type, cfg in self._configs.items():
             self.get_logger().info(f"Lade YOLO Modell [{c_type}]: {cfg['model_path']}")
@@ -53,6 +56,10 @@ class SpiralSearch(Policy):
 
     # --- Triangulation & Detection ---
     def _get_cam_frame_data(self, cam_full_name):
+        '''
+        Try to get the camera pose in base_link frame.
+        Returns None if TF is not available.
+        '''
         try:
             target = f"{cam_full_name}/optical" 
             trans = self._parent_node._tf_buffer.lookup_transform("base_link", target, Time())
@@ -64,9 +71,16 @@ class SpiralSearch(Policy):
             return None
 
     def detect_ports(self, observation, cable_type):
+        ''' 
+        1. Gets camera intrinsics from observation
+        2. Runs YOLO detection on available camera images
+        3. Triangulates 3D positions from multi-view detections
+        4. Returns dict of type {port_id: {"pos": [x,y,z], "quat": [x,y,z,w]}}
+        '''
+
         if observation is None: return {}
         
-        # Intrinsics
+        # 1. Get Intrinsics
         for cam in self._camera_names:
             attr = f"{cam}_camera_info"
             if hasattr(observation, attr):
@@ -76,6 +90,7 @@ class SpiralSearch(Policy):
         separated = {0: {}, 1: {}}
         model = self._models[cable_type]
         
+        # 2. Run YOLO Detection
         for cam in self._camera_names:
             img_msg = getattr(observation, f"{cam}_image", None)
             if img_msg is None: continue
@@ -88,6 +103,7 @@ class SpiralSearch(Policy):
                 if cls in separated:
                     separated[cls][cam] = res.keypoints.xy[j].cpu().numpy()
 
+        # 3. Triangulation & Pose Estimation
         found_ports = {}
         for pid, cams in separated.items():
             if len(cams) < 2: continue # Brauche mind. 2 Kameras
@@ -127,13 +143,13 @@ class SpiralSearch(Policy):
                 rot_matrix = np.stack([vec_x, vec_y, vec_z], axis=1)
                 found_ports[pid] = {"pos": center, "quat": R.from_matrix(rot_matrix).as_quat()}
         
+        # 4. Return Results
         return found_ports
 
-    ######################################################################## force stuff
+    # --- Force Monitoring and Threshold ---
     def _check_force_threshold(self, observation):
         """
-        Überprüft die aktuellen Kräfte am Handgelenk.
-        Pfad laut Debug: obs.wrist_wrench
+        Prints a warining when forces exceed 20N
         """
         try:
             if hasattr(observation, 'wrist_wrench') and observation.wrist_wrench is not None:
@@ -152,42 +168,19 @@ class SpiralSearch(Policy):
             # Falls doch mal ein Attribut fehlt, keine Unterbrechung des Programms
             pass
         return False
+    
 
-    def _call_tare_service(self):
-        """Ruft den externen Tare-Service auf und wartet auf Vollzug."""
-        self.get_logger().info("Warte auf Tare-Service...")
-        if not self._tare_client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error("Tare-Service '/aic_controller/tare_force_torque_sensor' nicht erreichbar!")
-            return False
-
-        future = self._tare_client.call_async(Trigger.Request())
-        
-        # Warten auf die Antwort (in Policy-Methoden ist das meist unbedenklich)
-        # Da wir in einem rclpy-Kontext sind, nutzen wir eine kleine Schleife:
-        import time
-        start_time = time.time()
-        while not future.done():
-            if time.time() - start_time > 5.0:
-                self.get_logger().error("Timeout beim Warten auf Tare-Antwort!")
-                return False
-            time.sleep(0.1)
-
-        result = future.result()
-        if result.success:
-            self.get_logger().info(f"Tare erfolgreich: {result.message}")
-            self.sleep_for(0.5) # Kurze Pause, damit die Werte sich stabilisieren
-            return True
-        else:
-            self.get_logger().error(f"Tare fehlgeschlagen: {result.message}")
-            return False
-    ######################################################################################
-
-    # --- Bewegungssteuerung mit Debugging ---
+    # --- Motion Control ---
     def _move_tcp_smooth_cartesian(self, pos, quat, move_robot, get_observation, stiffness, damping, n_steps=80, label="Target"):
         """
-        Sendet konstant die Zielpose mit niedriger Steifigkeit.
-        Der Impedanzregler konvergiert selbst sanft → wenig Jerk.
+        Soft Cartesian movement
+        1. set motion_update with target pose and stiffness/damping
+        2. loop: move_robot + check forces + check distance to target
+         - every 25 steps print distance to target
+         - if distance < 1mm, consider target reached and return
+         - if forces exceed threshold, print warning but continue
         """
+        # 1. Setup MotionUpdate
         motion_update = MotionUpdate()
         motion_update.header.frame_id = "base_link"
         motion_update.trajectory_generation_mode.mode = 2
@@ -210,9 +203,11 @@ class SpiralSearch(Policy):
         motion_update.target_stiffness = mat_stiff
         motion_update.target_damping   = mat_damp
 
-        self.get_logger().info(f"==> Fahre {label} an (smooth): P=[{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}]")
+        self.get_logger().info(f"==> Move to {label} (smooth): P=[{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}]")
 
         dist = float('inf')
+
+        # 2. Loop: Move + Monitor
         for i in range(n_steps):
             move_robot(motion_update=motion_update)
             obs = get_observation()
@@ -237,12 +232,15 @@ class SpiralSearch(Policy):
 
     def _get_tcp_goal_pose(self, port_pos, port_quat, cable_tip_frame):
         """
-        Berechnet die benötigte gripper/tcp Pose, damit der cable_tip_link 
-        auf der port_pose landet.
+        Calculates TCP offset to cable tip pose from Ground Truth TF
+        1. Get TF from cable tip to TCP (greifer/tcp)
+        2. Build transformation matrices:
+            - A: Base -> Port (from detection)
+            - B: Cable Tip -> TCP (from TF)
+            - C: Calculate Target TCP Pose: Base -> TCP = Base -> Port * Port -> TCP
         """
         
-        # 1. Hol dir den Versatz: Wo ist der Greifer relativ zur Kabelspitze?
-        # Wir schauen, wie wir von der Spitze zum Greifer kommen.
+        # 1. Get TF from cable tip to TCP
         timeout = Duration(seconds=1.0)
         tf_cable_to_tcp = self._parent_node._tf_buffer.lookup_transform(
             cable_tip_frame, 
@@ -251,13 +249,13 @@ class SpiralSearch(Policy):
             timeout=timeout
         )
         
-        # Umwandeln in Matrizen
-        # A: Transformation von Base zum erkannten Port
+        # 2. Transformations
+        # A: Transformation Base -> Port
         mat_base_to_port = np.eye(4)
         mat_base_to_port[:3, :3] = R.from_quat(port_quat).as_matrix()
         mat_base_to_port[:3, 3] = port_pos
         
-        # B: Transformation von Kabelspitze zum Greifer
+        # B: Transformation Cable Tip -> TCP
         mat_cable_to_tcp = np.eye(4)
         q_off = tf_cable_to_tcp.transform.rotation
         mat_cable_to_tcp[:3, :3] = R.from_quat([q_off.x, q_off.y, q_off.z, q_off.w]).as_matrix()
@@ -267,8 +265,7 @@ class SpiralSearch(Policy):
         self.get_logger().info(f"TCP zu PLUG TIP TRANSLATION: X: {t_off.x}, Y: {t_off.y}, Z: {t_off.z}")
         self.get_logger().info(f"TCP zu PLUG TIP ORIENTATION: qX: {q_off.x}, qY: {q_off.y}, qZ: {q_off.z}, qW: {q_off.w}")
         
-        # C: Ziel-Pose für den Greifer = Port-Pose * Offset
-        # (Wenn die Kabelspitze auf dem Port liegen soll)
+        # C: Calculate Target TCP Pose
         target_matrix = mat_base_to_port @ mat_cable_to_tcp
         
         target_pos = target_matrix[:3, 3]
@@ -278,11 +275,16 @@ class SpiralSearch(Policy):
     
     def _get_tcp_goal_pose_hardcoded(self, port_pos, port_quat, port_type):
         """
-        Berechnet die benötigte gripper/tcp Pose basierend auf den 
-        hochpräzisen Nominal-Werten (Ersatz für Ground Truth TF).
+        Calculates TCP goal pose from port pose using hardcoded offsets. (No Ground Truth TF needed)
+        1. Define fixed offset for sc and sfp
+        2. Build transformation matrices:
+            - A: Base -> Port (from detection)
+            - B: Cable Tip -> TCP (from hardcoded values)
+            - C: Calculate Target TCP Pose
+
         """
-        # --- DEINE PRÄZISIONS-WERTE AUS DEM LOG (CABLE TO TCP) ---
-        # Position
+        # 1. Define fixed offset for sc and sfp
+        # sc
         if port_type == 'sc':
 
             # Position
@@ -296,7 +298,7 @@ class SpiralSearch(Policy):
             off_qz = 0.69417
             off_qw = -0.6814
 
-        # Gripper Offset-Werte aus trial 1
+        # sfp
         elif port_type == 'sfp':
             off_x = 0.0
             off_y = 0.0004
@@ -308,18 +310,18 @@ class SpiralSearch(Policy):
             off_qw = -0.98366
 
 
-        # 1. Matrix: Base -> Port (Das Ziel im Raum, wo die Spitze hin soll)
+        # 2. Transformations
+        # A: Transformation Base -> Port (from detection)
         mat_base_to_port = np.eye(4)
         mat_base_to_port[:3, :3] = R.from_quat(port_quat).as_matrix()
         mat_base_to_port[:3, 3] = port_pos
         
-        # 2. Matrix: Kabelspitze -> Greifer (Der starre Versatz aus deinen Werten)
+        # B: Transformation Cable Tip -> TCP (from hardcoded offsets)
         mat_cable_to_tcp = np.eye(4)
         mat_cable_to_tcp[:3, :3] = R.from_quat([off_qx, off_qy, off_qz, off_qw]).as_matrix()
         mat_cable_to_tcp[:3, 3] = [off_x, off_y, off_z]
         
-        # 3. Ziel-Pose für den Greifer berechnen
-        # Logik: Base_to_TCP = Base_to_Port * Cable_to_TCP
+        # C: Calculate Target TCP Pose
         target_matrix = mat_base_to_port @ mat_cable_to_tcp
         
         target_pos = target_matrix[:3, 3]
@@ -333,18 +335,27 @@ class SpiralSearch(Policy):
                                steps=120,
                                label="Spiral"):
         """
-        Fährt eine Spirale in XY auf fixer Z-Höhe (center_pos).
-        Niedrige Z-Steifigkeit sorgt dafür dass der Stecker automatisch
-        reinrutscht sobald XY über der Öffnung ist.
+        Moves the TCP in a spiral pattern around center_pos on a fixed Z plane
+        - Uses low z stiffness or gentle contact during search
+        - Slips in once it finds the hole (z offset at plug depth)
+        1. Define controller stiffness and damping
+        2. Loop (Move in Spiral + Monitor):
+            - Calculate spiral offset (linear increase in radius)
+            - Move robot to new position
+            - Check forces and distance to center
+            - If distance < 1mm, consider target reached and return
         """
+        # 1. Controller Config
         stiff_spiral = [300.0, 300.0, 80.0, 200.0, 200.0, 200.0]
         damp_spiral  = [ 40.0,  40.0, 15.0,  30.0,  30.0,  30.0]
 
-        self.get_logger().info(f"==> Starte Spiralsuche für {label} | max_radius={max_radius*1000:.1f}mm | turns={n_turns} | steps={steps}")
+        self.get_logger().info(f"==> Start Spiral search for {label} | max_radius={max_radius*1000:.1f}mm | turns={n_turns} | steps={steps}")
 
         t_vals = np.linspace(0, n_turns * 2 * np.pi, steps)
 
+        # 2. Loop: Move in Spiral + Monitor
         for idx, t in enumerate(t_vals):
+            # Calculate spiral offset (linear increase in radius)
             r = (t / (n_turns * 2 * np.pi)) * max_radius
             dx = r * np.cos(t)
             dy = r * np.sin(t)
@@ -352,11 +363,12 @@ class SpiralSearch(Policy):
             search_pos = center_pos.copy()
             search_pos[0] += dx
             search_pos[1] += dy
-            # Z bleibt fix auf center_pos[2]
 
+            # Move Robot, Z stays fixed at center_pos[2]
             motion_update = self._build_motion_update(search_pos, quat, stiff_spiral, damp_spiral)
             move_robot(motion_update=motion_update)
 
+            # Monitor: Check forces and distance to center
             obs = get_observation()
             self._check_force_threshold(obs)
 
@@ -364,7 +376,7 @@ class SpiralSearch(Policy):
             dist = math.sqrt(
                 (curr.x - search_pos[0])**2 +
                 (curr.y - search_pos[1])**2 +
-                (curr.z - center_pos[2])**2  # Z immer gegen center_pos messen
+                (curr.z - center_pos[2])**2  # compare Z always against center_pos
             )
 
             if idx % 20 == 0:
@@ -372,7 +384,7 @@ class SpiralSearch(Policy):
 
             self.sleep_for(0.05)
 
-        # Am Ende Restfehler gegen originale center_pos messen
+        # Calculate final distance to center after spiral search
         obs = get_observation()
         curr = obs.controller_state.tcp_pose.position
         final_dist = math.sqrt(
@@ -381,12 +393,19 @@ class SpiralSearch(Policy):
             (curr.z - center_pos[2])**2
         )
 
-        self.get_logger().info(f"    [{label}] Spiralsuche fertig. Restfehler zu center: {final_dist*1000:.2f}mm")
+        self.get_logger().info(f"    [{label}] Spiral search done, final distance: {final_dist*1000:.2f}mm")
         return final_dist
 
     def _build_motion_update(self, pos, quat, stiffness, damping):
-        """Helper: MotionUpdate aus pos/quat/stiffness/damping bauen."""
+        """
+        Helper: MotionUpdate from pos/quat/stiffness/damping
+        1. Create MotionUpdate message
+        2. Fill in target pose and stiffness/damping matrices
+        3. Return MotionUpdate
+        """
+        # 1. Create MotionUpdate message
         motion_update = MotionUpdate()
+        # 2. Fill in target pose and stiffness/damping matrices
         motion_update.header.frame_id = "base_link"
         motion_update.trajectory_generation_mode.mode = 2
 
@@ -406,19 +425,37 @@ class SpiralSearch(Policy):
         motion_update.target_stiffness = mat_stiff
         motion_update.target_damping   = mat_damp
 
+        # 3. Return MotionUpdate
         return motion_update
 
     # --- Main ---
-    def insert_cable(self, task: Task, get_observation: GetObservationCallback, move_robot: MoveRobotCallback, send_feedback: SendFeedbackCallback):
+    def insert_cable(self,
+                     task: Task,
+                     get_observation: GetObservationCallback,
+                     move_robot: MoveRobotCallback,
+                     send_feedback: SendFeedbackCallback):
+        '''
+        Main function that is called during the evaluation
+
+        1. Get task from aic_task_interfaces and print debug info
+        2. Run detection
+        3. Select target port (try to match port_name, otherwise take first seen)
+        4. Calculate TCP goal pose (with or without Ground Truth)
+        5. Calculate approach pose (same XY, but Z raised by approach offset)
+        6. Calculate plug position for later use in spiral search (same XY, but Z at plug depth)
+        7.1 Move to approach pose (smoothly, with low stiffness)
+        7.2 Increase stiffness for better allignemt before spiral search
+        8. Spiral Search and Insert
+        9. Check final distance to plug position after spiral search
+        10. If not successful, try to move down to plug position with low stiffness
+        '''
         # 1. Task Debug Info
         self.get_logger().info("============================================================")
-        self.get_logger().info(f"NEUER TASK START: {task.cable_type.upper()}")
+        self.get_logger().info(f"STARTING NEW TASK: {task.cable_type.upper()}")
         self.get_logger().info(f"Port: {task.port_name} | Plug: {task.plug_name}")
-        self.get_logger().info("============================================================")
+        self.get_logger().info("=================   ===========================================")
 
-        send_feedback("Taring force sensor...")
-        #self._call_tare_service()
-
+        
         c_type = task.port_type.lower()
         if c_type not in self._configs:
             self.get_logger().error(f"Kabeltyp '{c_type}' ist nicht konfiguriert!")
@@ -426,15 +463,15 @@ class SpiralSearch(Policy):
         
         cfg = self._configs[c_type]
 
-        # 2. Erkennung
+        # 2. Detection
         obs = get_observation()
         found_ports = self.detect_ports(obs, c_type)
 
         if not found_ports:
-            self.get_logger().error("DETECTION FAILED: Kein passender Port gefunden!")
+            self.get_logger().error("DETECTION FAILED: No ports found!")
             return False
 
-        # Port Auswahl Logik
+        # 3. Select Target Port
         try:
             target_id = int(task.port_name.split('_')[-1])
         except:
@@ -449,27 +486,23 @@ class SpiralSearch(Policy):
         self.get_logger().info(f"ERKANNT: Port {target_id} bei Base-Link: Pos={pp}, Quat={pq}")
 
 
-        cable_tip_frame = cfg['cable_tip_frame']
-
-        # self.get_logger().info(f"Berechne TCP-Ziel für {cable_tip_frame} auf Port {target_id}")
-        # tcp_pos, tcp_quat = self._get_tcp_goal_pose(target_port["pos"], target_port["quat"], cable_tip_frame)
-
-        # self.get_logger().info(f"BERECHNET: TCP Ziel-Pose mit Ground truth: Pos={tcp_pos}, Quat={tcp_quat}")
+        # 4. Calculate TCP Goal Pose
         tcp_pos, tcp_quat = self._get_tcp_goal_pose_hardcoded(target_port["pos"], target_port["quat"], c_type)
 
         self.get_logger().info(f"BERECHNET: TCP Ziel-Pose ohne Ground truth: Pos={tcp_pos}, Quat={tcp_quat}")
 
-        # 4. Ausführung
-        send_feedback(f"Starte Einsteckvorgang für {c_type}...")
+        # Send Feedback about starting the insertion process
+        send_feedback(f"Starting {c_type} insertion...")
 
-        # Schritt A: Approach (Über dem Port)
+        # 5. Calculate approach pose (same XY, but Z raised by approach offset)
         approach_pos = tcp_pos.copy()
         approach_pos[2] += cfg['z_approach']
 
+        # 6. Calculate plug position for later use in spiral search (same XY, but Z at plug depth)
         plug_pos = tcp_pos.copy()
         plug_pos[2] += cfg['z_plug']
 
-        # Phase 1: Sanft zum Approach (wie GentleGiant - niedrig + gedämpft)
+        # 7.1 Move to approach pose (smoothly, with low stiffness)
         self._move_tcp_smooth_cartesian(
             approach_pos, tcp_quat, move_robot, get_observation,
             stiffness=[150.0, 150.0, 150.0, 80.0, 80.0, 80.0],
@@ -478,7 +511,7 @@ class SpiralSearch(Policy):
             label="Approach"
         )
 
-        # Phase 2: Versteifen OHNE Bewegung (einregeln lassen)
+        # 7.2 Increase stiffness for better allignemt before spiral search
         self._move_tcp_smooth_cartesian(
             approach_pos, tcp_quat, move_robot, get_observation,
             stiffness=[400.0]*6,
@@ -487,8 +520,7 @@ class SpiralSearch(Policy):
             label="Stiffening"
         )
 
-        # if dist > 0.020:  # > 2cm → Spiralsuche
-        # self.get_logger().info(f"Restfehler {dist*1000:.1f}mm > 20mm → Starte Spiralsuche")
+        # 8. Spiral Search and Insert
         final_dist = self._spiral_search_and_insert(
             center_pos=plug_pos,
             quat=tcp_quat,
@@ -498,12 +530,14 @@ class SpiralSearch(Policy):
             label=c_type
         )
         
+        # 9. Check final distance to plug position after spiral search
         if final_dist < 1.0:
             self.get_logger().info("============================================================")
-            self.get_logger().info(f"TASK ERFOLGREICH BEENDET ({c_type})")
+            self.get_logger().info(f"SUCCESS - Inserted:({c_type})")
             self.get_logger().info("============================================================")
             return True
 
+        # 10. If not successful, try to move down to plug position with low stiffness (slipping in)
         else:
             final_plug_position = plug_pos.copy()
             final_plug_position[2] -= 0.01 
