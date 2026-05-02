@@ -24,51 +24,28 @@ class PlugIn(Policy):
         self._bridge = CvBridge()
         self._camera_names = ['left', 'center', 'right']
         self._cam_intrinsics = {}
-
-        # TF lookups can become temporarily unreliable after sim resets (time jumps).
-        # Camera extrinsics are static, so cache successful lookups and reuse them.
-        self._tf_cam_frame_cache = {}
-
-        # Throttle noisy TF debug checks (uses wall-clock monotonic time).
-        self._last_tip_offset_debug_monotonic_s = None
         
         self._configs = {
             'sc': {
-                #'model_path': "/models/single_sc_detection.pt",
+                'model_path': "/models/single_sc_detection.pt",
                 #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
-                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
+                #'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
                 'off_pos': [0.0, -0.015385, -0.04045],
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
-                'z_approach_1': 0.04,
+                'z_approach_1': 0.03,
                 'z_approach_2': 0.005,
                 'z_plug': -0.05,
-                'cable_tip_frame': "cable_0/sc_tip_link",
-                'search_insert_strategy_1' : "_spiral_search_and_insert_2d",
-                'spiral_max_radius_1': 0.003,
-                'spiral_max_radius_2': 0.006,
-                'spiral_stiffness_1': [300.0, 300.0, 40.0, 200.0, 200.0, 200.0],
-                'spiral_damping_1': [40.0, 40.0, 15.0, 30.0, 30.0, 30.0],
-                'spiral_stiffness_2': [150.0, 150.0, 30.0, 300.0, 300.0, 10.0],
-                'spiral_damping_2': [30.0, 30.0, 10.0, 30.0, 30.0, 30.0]
+                'cable_tip_frame': "cable_0/sc_tip_link"
             },
-
             'sfp': {
-                #'model_path': "/models/best150.pt",
+                'model_path': "/models/best150.pt",
                 #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt",
-                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/best150.pt",
+                #'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/best150.pt",
                 'off_pos': [0.0, -0.015385, -0.04245],
                 'off_quat': [0.179611, 0.005559, -0.027461, -0.983338],
-                'z_approach_1': 0.02,
-                'z_approach_2': 0.01,
+                'z_approach': 0.01,
                 'z_plug': -0.045,
-                'cable_tip_frame': "cable_0/sfp_tip_link",
-                'search_insert_strategy_1' : "_spiral_search_and_insert_2d",
-                'spiral_max_radius_1': 0.003,
-                'spiral_max_radius_2': 0.005,
-                'spiral_stiffness_1': [300.0, 300.0, 80.0, 200.0, 200.0, 200.0],
-                'spiral_damping_1': [40.0, 40.0, 15.0, 30.0, 30.0, 30.0],
-                'spiral_stiffness_2': [300.0, 300.0, 120.0, 200.0, 200.0, 200.0],
-                'spiral_damping_2': [40.0, 40.0, 20.0, 30.0, 30.0, 30.0]
+                'cable_tip_frame': "cable_0/sfp_tip_link"
             }
         }
 
@@ -76,30 +53,8 @@ class PlugIn(Policy):
         self._models = {}
         for c_type, cfg in self._configs.items():
             self.get_logger().info(f"Lade YOLO Modell [{c_type}]: {cfg['model_path']}")
-            try:
-                self._models[c_type] = YOLO(cfg['model_path'])
-                # Warmup to avoid first-call latency
-                self._models[c_type].predict(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)
-            except Exception as e:
-                self.get_logger().error(f"Failed to load YOLO model for '{c_type}': {e}")
-                self._models[c_type] = None
-
-    def on_cleanup(self):
-        """Clean up policy state on lifecycle cleanup.
-        
-        This is called when transitioning from INACTIVE to UNCONFIGURED state.
-        We use this to properly clean up cached TF data and old state that might
-        persist between trials.
-        """
-        self.get_logger().info("PlugIn on_cleanup: Clearing cached TF data and state")
-        
-        # Clear cached TF frame data to avoid using stale transforms after simulation reset
-        self._tf_cam_frame_cache.clear()
-        
-        # Reset last debug timestamp to restart debugging cycle
-        self._last_tip_offset_debug_monotonic_s = None
-        
-        self.get_logger().info("PlugIn on_cleanup: Done")
+            self._models[c_type] = YOLO(cfg['model_path'])
+            self._models[c_type].predict(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)
 
     # --- Triangulation & Detection ---
     def _get_cam_frame_data(self, cam_full_name):
@@ -107,22 +62,19 @@ class PlugIn(Policy):
         Try to get the camera pose in base_link frame.
         Returns None if TF is not available.
         '''
-        cached = self._tf_cam_frame_cache.get(cam_full_name)
         try:
             target = f"{cam_full_name}/optical" 
             trans = self._parent_node._tf_buffer.lookup_transform("base_link", target, Time())
-            data = {
+            return {
                 "pos": np.array([trans.transform.translation.x, trans.transform.translation.y, trans.transform.translation.z]),
                 "rot": R.from_quat([trans.transform.rotation.x, trans.transform.rotation.y, trans.transform.rotation.z, trans.transform.rotation.w]).as_matrix()
             }
-            self._tf_cam_frame_cache[cam_full_name] = data
-            return data
         except Exception as e:
-            return cached
+            return None
 
     def detect_ports(self, observation, cable_type):
         if observation is None:
-            return {}, 0, 0
+            return {}, 0
 
         # --- Intrinsics ---
         for cam in self._camera_names:
@@ -136,10 +88,7 @@ class PlugIn(Policy):
                     'cy': msg.k[5]
                 }
 
-        model = getattr(self, '_models', {}).get(cable_type)
-        if model is None:
-            self.get_logger().error(f"No YOLO model available for cable_type='{cable_type}'")
-            return {}, 0, 0
+        model = self._models[cable_type]
 
         # 🔥 NEU: zählen
         unique_classes = set()
@@ -254,6 +203,8 @@ class PlugIn(Policy):
             # Falls doch mal ein Attribut fehlt, keine Unterbrechung des Programms
             pass
         return False
+    
+        
 
     # --- Motion Control ---
     def _move_tcp_smooth_cartesian(self, pos, quat,
@@ -321,6 +272,10 @@ class PlugIn(Policy):
             self.sleep_for(0.1)
         self.get_logger().info(f"    [{label}] Fertig. Restfehler: {dist*1000:.3f} mm")
 
+        # ---DEBUG Tip Offset Check---
+        if debug_port_type is not None:
+            self._check_tip_offset(obs=obs, port_type=debug_port_type)
+        
         return dist
 
     def _get_tcp_goal_pose(self, port_pos, port_quat, cable_tip_frame):
@@ -366,7 +321,7 @@ class PlugIn(Policy):
         
         return target_pos, target_quat
     
-    def _get_tcp_goal_pose_hardcoded(self, port_pos, port_quat, port_type, off_pos=None, off_quat=None):
+    def _get_tcp_goal_pose_hardcoded(self, port_pos, port_quat, port_type):
         """
         Calculates TCP goal pose from port pose using hardcoded offsets. (No Ground Truth TF needed)
         1. Define fixed offset for sc and sfp
@@ -377,7 +332,7 @@ class PlugIn(Policy):
 
         """
         # 1. Define fixed offset (Tip -> TCP)
-        off_t, off_q = self._get_tip_to_tcp_offset_hardcoded(port_type, off_pos, off_quat)
+        off_t, off_q = self._get_tip_to_tcp_offset_hardcoded(port_type)
 
 
         # 2. Transformations
@@ -399,7 +354,7 @@ class PlugIn(Policy):
 
         return target_pos, target_quat
 
-    def _get_tip_to_tcp_offset_hardcoded(self, port_type, off_pos=None, off_quat=None):
+    def _get_tip_to_tcp_offset_hardcoded(self, port_type):
         """Hardcoded transform from cable tip frame to gripper/tcp frame.
 
         Returns:
@@ -407,27 +362,166 @@ class PlugIn(Policy):
               - t: np.ndarray shape (3,) translation in meters (Tip -> TCP), expressed in tip frame
               - q: np.ndarray shape (4,) quaternion xyzw (Tip -> TCP)
         """
-        t = np.array(off_pos)
-        q = np.array(off_quat)
+        if port_type == 'sc':
+            t = np.array([0.005327, -0.000874, -0.01194], dtype=float)
+            q = np.array([0.1608, -0.167181, 0.69417, -0.6814], dtype=float)
+        elif port_type == 'sfp':
+            t = np.array([0.0, 0.0004, -0.05795], dtype=float)
+            q = np.array([0.17785, 0.00505, -0.02738, -0.98366], dtype=float)
+        else:
+            raise ValueError(f"Unknown port_type for hardcoded offset: {port_type}")
+
         q_norm = float(np.linalg.norm(q))
         if q_norm > 0:
             q = q / q_norm
 
         return t, q
 
+    def _check_tip_offset(self, obs, port_type=None, cable_tip_frame=None):
+        """Debug: validate hardcoded Tip->TCP offset against TF.
 
-    def _spiral_search_and_insert(self, center_pos, 
-                                  quat, 
-                                  move_robot,
-                                  get_observation,
-                                  stiff_spiral=[300.0, 300.0, 80.0, 200.0, 200.0, 200.0], 
-                                  damp_spiral=[40.0, 40.0, 15.0, 30.0, 30.0, 30.0],
-                                  max_radius=0.003,
-                                  n_turns=3,
-                                  steps=120,
-                                  label="Spiral",
-                                  obs=None,
-                                  debug_port_type=None):
+        Consistent comparisons:
+        1) Tip->TCP transform: TF vs hardcoded (translation + rotation).
+        2) Base->Tip pose: TF vs computed from observation Base->TCP and hardcoded Tip->TCP.
+        """
+        if obs is None or not hasattr(obs, 'controller_state') or obs.controller_state is None:
+            self.get_logger().warning("DEBUG TIP OFFSET | Missing controller_state in observation")
+            return
+
+        # Resolve port_type / cable_tip_frame
+        if port_type is None:
+            if cable_tip_frame and 'sc' in cable_tip_frame:
+                port_type = 'sc'
+            elif cable_tip_frame and 'sfp' in cable_tip_frame:
+                port_type = 'sfp'
+            else:
+                self.get_logger().warning(f"DEBUG TIP OFFSET | port_type unknown (cable_tip_frame={cable_tip_frame})")
+                return
+
+        if cable_tip_frame is None:
+            cable_tip_frame = self._configs[port_type]['cable_tip_frame']
+
+        # Hardcoded Tip->TCP
+        try:
+            t_h, q_h = self._get_tip_to_tcp_offset_hardcoded(port_type)
+        except Exception as e:
+            self.get_logger().warning(f"DEBUG TIP OFFSET | Hardcoded offset error: {e}")
+            return
+
+        def _quat_angle_deg(q1, q2):
+            q1 = np.asarray(q1, dtype=float)
+            q2 = np.asarray(q2, dtype=float)
+            n1 = float(np.linalg.norm(q1))
+            n2 = float(np.linalg.norm(q2))
+            if n1 == 0 or n2 == 0:
+                return float('nan')
+            q1 = q1 / n1
+            q2 = q2 / n2
+            dot = float(np.clip(abs(np.dot(q1, q2)), 0.0, 1.0))
+            return float(np.degrees(2.0 * np.arccos(dot)))
+
+        # 1) TF Tip->TCP vs hardcoded Tip->TCP
+        t_tf = None
+        q_tf = None
+        try:
+            timeout = Duration(seconds=1.0)
+            tf_tip_to_tcp = self._parent_node._tf_buffer.lookup_transform(
+                cable_tip_frame,
+                "gripper/tcp",
+                Time(),
+                timeout=timeout,
+            )
+            rot = tf_tip_to_tcp.transform.rotation
+            trans = tf_tip_to_tcp.transform.translation
+            t_tf = np.array([trans.x, trans.y, trans.z], dtype=float)
+            q_tf = np.array([rot.x, rot.y, rot.z, rot.w], dtype=float)
+        except Exception as e:
+            self.get_logger().warning(
+                f"DEBUG TIP OFFSET | TF Tip->TCP not available ({cable_tip_frame} -> gripper/tcp): {e}"
+            )
+
+        if t_tf is not None and q_tf is not None:
+            trans_err_mm = float(np.linalg.norm(t_tf - t_h) * 1000.0)
+            rot_err_deg = _quat_angle_deg(q_tf, q_h)
+            self.get_logger().info(
+                "DEBUG TIP OFFSET | Tip->TCP compare"
+                f" | type={port_type} frame={cable_tip_frame}"
+                f" | TF t={t_tf} q={q_tf}"
+                f" | HC t={t_h} q={q_h}"
+                f" | Δt={trans_err_mm:.2f}mm ΔR={rot_err_deg:.2f}deg"
+            )
+        else:
+            self.get_logger().info(
+                "DEBUG TIP OFFSET | Tip->TCP compare"
+                f" | type={port_type} frame={cable_tip_frame}"
+                " | TF unavailable"
+                f" | HC t={t_h} q={q_h}"
+            )
+
+        # 2) Base->Tip pose: TF vs (Base->TCP from obs) * inv(Tip->TCP hardcoded)
+        tcp_pose = obs.controller_state.tcp_pose
+        t_base_tcp = np.array([
+            tcp_pose.position.x,
+            tcp_pose.position.y,
+            tcp_pose.position.z,
+        ], dtype=float)
+        q_base_tcp = np.array([
+            tcp_pose.orientation.x,
+            tcp_pose.orientation.y,
+            tcp_pose.orientation.z,
+            tcp_pose.orientation.w,
+        ], dtype=float)
+        q_base_tcp_norm = float(np.linalg.norm(q_base_tcp))
+        if q_base_tcp_norm == 0:
+            self.get_logger().warning("DEBUG TIP OFFSET | Base->TCP quaternion in obs has zero norm")
+            return
+        q_base_tcp = q_base_tcp / q_base_tcp_norm
+
+        T_base_tcp = np.eye(4)
+        T_base_tcp[:3, :3] = R.from_quat(q_base_tcp).as_matrix()
+        T_base_tcp[:3, 3] = t_base_tcp
+
+        T_tip_tcp_hc = np.eye(4)
+        T_tip_tcp_hc[:3, :3] = R.from_quat(q_h).as_matrix()
+        T_tip_tcp_hc[:3, 3] = t_h
+
+        T_base_tip_hc = T_base_tcp @ np.linalg.inv(T_tip_tcp_hc)
+        t_base_tip_hc = T_base_tip_hc[:3, 3]
+        q_base_tip_hc = R.from_matrix(T_base_tip_hc[:3, :3]).as_quat()
+
+        try:
+            timeout = Duration(seconds=1.0)
+            tf_base_to_tip = self._parent_node._tf_buffer.lookup_transform(
+                "base_link",
+                cable_tip_frame,
+                Time(),
+                timeout=timeout,
+            )
+            trans = tf_base_to_tip.transform.translation
+            rot = tf_base_to_tip.transform.rotation
+            t_base_tip_tf = np.array([trans.x, trans.y, trans.z], dtype=float)
+            q_base_tip_tf = np.array([rot.x, rot.y, rot.z, rot.w], dtype=float)
+
+            tip_pos_err_mm = float(np.linalg.norm(t_base_tip_tf - t_base_tip_hc) * 1000.0)
+            tip_rot_err_deg = _quat_angle_deg(q_base_tip_tf, q_base_tip_hc)
+            self.get_logger().info(
+                "DEBUG TIP OFFSET | Base->Tip compare"
+                f" | TF t={t_base_tip_tf} q={q_base_tip_tf}"
+                f" | HC t={t_base_tip_hc} q={q_base_tip_hc}"
+                f" | Δt={tip_pos_err_mm:.2f}mm ΔR={tip_rot_err_deg:.2f}deg"
+            )
+        except Exception as e:
+            self.get_logger().warning(
+                f"DEBUG TIP OFFSET | TF Base->Tip not available (base_link -> {cable_tip_frame}): {e}"
+            )
+
+    def _spiral_search_and_insert(self, center_pos, quat, move_robot, get_observation,
+                               max_radius=0.003,
+                               n_turns=3,
+                               steps=120,
+                               label="Spiral",
+                               obs=None,
+                               debug_port_type=None):
         """
         Moves the TCP in a spiral pattern around center_pos on a fixed Z plane
         - Uses low z stiffness or gentle contact during search
@@ -439,6 +533,9 @@ class PlugIn(Policy):
             - Check forces and distance to center
             - If distance < 1mm, consider target reached and return
         """
+        # 1. Controller Config
+        stiff_spiral = [300.0, 300.0, 80.0, 200.0, 200.0, 200.0]
+        damp_spiral  = [ 40.0,  40.0, 15.0,  30.0,  30.0,  30.0]
 
         self.get_logger().info(f"==> Start Spiral search for {label} | max_radius={max_radius*1000:.1f}mm | turns={n_turns} | steps={steps}")
 
@@ -486,9 +583,13 @@ class PlugIn(Policy):
 
         self.get_logger().info(f"    [{label}] Spiral search done, final distance: {final_dist*1000:.2f}mm")
 
+        # ---DEBUG Tip Offset Check---
+        if debug_port_type is not None:
+            self._check_tip_offset(obs=obs, port_type=debug_port_type)
+
 
         return final_dist
-    
+
     def _build_motion_update(self, pos, quat, stiffness, damping):
         """
         Helper: MotionUpdate from pos/quat/stiffness/damping
@@ -522,7 +623,6 @@ class PlugIn(Policy):
 
         return motion_update
 
-
     # --- Main ---
     def insert_cable(self,
                      task: Task,
@@ -544,10 +644,6 @@ class PlugIn(Policy):
         9. Check final distance to plug position after spiral search
         10. If not successful, try to move down to plug position with low stiffness
         '''
-
-        # 0 Sleep to ensure everything is ready
-        self.sleep_for(1.0)
-
         # 1. Task Debug Info
         self.get_logger().info("============================================================")
         self.get_logger().info(f"STARTING NEW TASK: {task.cable_type.upper()}")
@@ -570,13 +666,12 @@ class PlugIn(Policy):
         self.get_logger().info(f"DEBUG: Unique port classes: {num_unique_ports}")
         self.get_logger().info(f"DEBUG: Triangulated ports: {len(found_ports)}")
 
-        # Check if multiple cards spawn
         if total_detections > 8:
             self.get_logger().warning(
                 f"⚠️ MEHR ALS 2 PORTS GESPAWNT! ({total_detections})"
             )
 
-            # Hard abort (do not report success)
+            # 👉 optional: harter Abbruch
             return True
 
         # 3. Select Target Port
@@ -595,9 +690,9 @@ class PlugIn(Policy):
 
 
         # 4. Calculate TCP Goal Pose
-        tcp_pos, tcp_quat = self._get_tcp_goal_pose_hardcoded(target_port["pos"], target_port["quat"], c_type, off_pos=cfg['off_pos'], off_quat=cfg['off_quat'])
+        tcp_pos, tcp_quat = self._get_tcp_goal_pose_hardcoded(target_port["pos"], target_port["quat"], c_type)
 
-        self.get_logger().info(f"Calculated TCP goal pose: Pos={tcp_pos}, Quat={tcp_quat}")
+        self.get_logger().info(f"BERECHNET: TCP Ziel-Pose ohne Ground truth: Pos={tcp_pos}, Quat={tcp_quat}")
 
         # Send Feedback about starting the insertion process
         send_feedback(f"Starting {c_type} insertion...")
@@ -648,17 +743,12 @@ class PlugIn(Policy):
         )
 
         # 8. Spiral Search and Insert
-        spiral_max_radius = cfg.get('spiral_max_radius', 0.005)
-        spiral_stiffness_1 = cfg.get('spiral_stiffness_1', [300.0, 300.0, 80.0, 200.0, 200.0, 200.0])
-        spiral_damping_1 = cfg.get('spiral_damping_1', [40.0, 40.0, 15.0, 30.0, 30.0, 30.0])
         final_dist = self._spiral_search_and_insert(
             center_pos=plug_pos,
             quat=tcp_quat,
             move_robot=move_robot,
             get_observation=get_observation,
-            stiff_spiral=spiral_stiffness_1,
-            damp_spiral=spiral_damping_1,
-            max_radius=spiral_max_radius,
+            max_radius=0.005,
             label=c_type,
             obs=obs,
             debug_port_type=c_type
@@ -700,18 +790,13 @@ class PlugIn(Policy):
             self.get_logger().info("============================================================")
             return True
         else:
-            # 12 Spiral Search and Insert with larger radius and modified parameters
-            spiral_stiffness_2 = cfg.get('spiral_stiffness_2', [200.0, 200.0, 50.0, 150.0, 150.0, 150.0])
-            spiral_damping_2 = cfg.get('spiral_damping_2', [30.0, 30.0, 10.0, 20.0, 20.0, 20.0])
-            spiral_max_radius_2 = cfg.get('spiral_max_radius_2', 0.007)
+            # 12 Spiral Search and Insert with larger radius and 
             final_dist = self._spiral_search_and_insert(
                 center_pos=plug_pos,
                 quat=tcp_quat,
                 move_robot=move_robot,
                 get_observation=get_observation,
-                max_radius=spiral_max_radius_2,
-                stiff_spiral=spiral_stiffness_2,
-                damp_spiral=spiral_damping_2,
+                max_radius=0.007,
                 label=c_type,
                 obs=obs,
                 debug_port_type=c_type

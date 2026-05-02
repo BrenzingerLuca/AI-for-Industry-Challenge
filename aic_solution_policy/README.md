@@ -16,6 +16,7 @@ Bugs to fix next:
 
 ## Getting startet
 
+### Testing single PlugIn
 1. Terminal with (start simulation):
 
 ```bash
@@ -39,6 +40,22 @@ ros2 lifecycle set /aic_model activate
 
 ros2 action send_goal /insert_cable aic_task_interfaces/action/InsertCable "{task: {id: 'cable_1', cable_type: 'sfp', cable_name: 'sfp_cable', plug_type: 'sfp', plug_name: 'sfp_plug', port_type: 'sfp', port_name: 'sfp_port_0', target_module_name: 'nic_card_0', time_limit: 60}}"
 ```
+
+### Testing Evaluation
+
+1. Terminal 
+```bash
+cd ws_aic/src/aic 
+pixi shell
+ros2 run aic_model aic_model --ros-args -p use_sim_time:=true -p policy:=aic_solution_policy.PlugIn
+```
+
+2. Terminal
+```bash
+distrobox enter -r aic_eval
+/entrypoint.sh ground_truth:=true start_aic_engine:=true
+```
+
 
 ## Developement Guide
 To debug new package versionens 2. Terminal:
