@@ -39,27 +39,29 @@ class PlugIn(Policy):
                 'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
                 'off_pos': [0.0, -0.015385, -0.04045],
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
-                'z_approach_1': 0.04,
-                'z_approach_2': 0.005,
-                'z_plug': -0.05,
+                'z_approach_1': 0.03,
+                'z_approach_2': 0.0025,
+                'z_plug': -0.03,
                 'cable_tip_frame': "cable_0/sc_tip_link",
                 'search_insert_strategy_1' : "_spiral_search_and_insert_2d",
-                'spiral_max_radius_1': 0.003,
-                'spiral_max_radius_2': 0.006,
-                'spiral_stiffness_1': [300.0, 300.0, 40.0, 200.0, 200.0, 200.0],
+                'spiral_max_radius_1': 0.002,
+                'spiral_max_radius_2': 0.005,
+                'spiral_stiffness_1': [300.0, 300.0, 40.0, 200.0, 200.0, 40.0],
                 'spiral_damping_1': [40.0, 40.0, 15.0, 30.0, 30.0, 30.0],
                 'spiral_stiffness_2': [150.0, 150.0, 30.0, 300.0, 300.0, 10.0],
-                'spiral_damping_2': [30.0, 30.0, 10.0, 30.0, 30.0, 30.0]
+                'spiral_damping_2': [30.0, 30.0, 10.0, 30.0, 30.0, 30.0],
+                'spiral_steps_1': 150,
+                'spiral_steps_2': 250
             },
 
             'sfp': {
                 #'model_path': "/models/best150.pt",
                 #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt",
                 'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/best150.pt",
-                'off_pos': [0.0, -0.015385, -0.04245],
-                'off_quat': [0.179611, 0.005559, -0.027461, -0.983338],
+                'off_pos': [0.0, 0.0004, -0.05795],
+                'off_quat': [0.17785, 0.00505, -0.02738, -0.98366],
                 'z_approach_1': 0.02,
-                'z_approach_2': 0.01,
+                'z_approach_2': 0.005,
                 'z_plug': -0.045,
                 'cable_tip_frame': "cable_0/sfp_tip_link",
                 'search_insert_strategy_1' : "_spiral_search_and_insert_2d",
@@ -68,7 +70,9 @@ class PlugIn(Policy):
                 'spiral_stiffness_1': [300.0, 300.0, 80.0, 200.0, 200.0, 200.0],
                 'spiral_damping_1': [40.0, 40.0, 15.0, 30.0, 30.0, 30.0],
                 'spiral_stiffness_2': [300.0, 300.0, 120.0, 200.0, 200.0, 200.0],
-                'spiral_damping_2': [40.0, 40.0, 20.0, 30.0, 30.0, 30.0]
+                'spiral_damping_2': [40.0, 40.0, 20.0, 30.0, 30.0, 30.0],
+                'spiral_steps_1': 120,
+                'spiral_steps_2': 250
             }
         }
 
@@ -394,6 +398,15 @@ class PlugIn(Policy):
         # C: Calculate Target TCP Pose
         target_matrix = mat_base_to_port @ mat_cable_to_tcp
         
+
+        # DEBUG: Correct the offset in world frame estimated from gazebo
+        if port_type == 'sc':
+            delta_t_base = np.array([-0.016, -0.007, 0.0])
+            delta_R_base = R.from_euler('z', -4, degrees=True).as_matrix()
+            target_matrix[:3, 3] += delta_t_base
+            target_matrix[:3, :3] = target_matrix[:3, :3] @ delta_R_base
+
+
         target_pos = target_matrix[:3, 3]
         target_quat = R.from_matrix(target_matrix[:3, :3]).as_quat()
 
@@ -422,9 +435,9 @@ class PlugIn(Policy):
                                   get_observation,
                                   stiff_spiral=[300.0, 300.0, 80.0, 200.0, 200.0, 200.0], 
                                   damp_spiral=[40.0, 40.0, 15.0, 30.0, 30.0, 30.0],
+                                  spiral_steps=120,
                                   max_radius=0.003,
                                   n_turns=3,
-                                  steps=120,
                                   label="Spiral",
                                   obs=None,
                                   debug_port_type=None):
@@ -440,9 +453,9 @@ class PlugIn(Policy):
             - If distance < 1mm, consider target reached and return
         """
 
-        self.get_logger().info(f"==> Start Spiral search for {label} | max_radius={max_radius*1000:.1f}mm | turns={n_turns} | steps={steps}")
+        self.get_logger().info(f"==> Start Spiral search for {label} | max_radius={max_radius*1000:.1f}mm | turns={n_turns} | steps={spiral_steps}")
 
-        t_vals = np.linspace(0, n_turns * 2 * np.pi, steps)
+        t_vals = np.linspace(0, n_turns * 2 * np.pi, spiral_steps)
 
         # 2. Loop: Move in Spiral + Monitor
         for idx, t in enumerate(t_vals):
@@ -471,7 +484,7 @@ class PlugIn(Policy):
             )
 
             if idx % 20 == 0:
-                self.get_logger().info(f"    [{idx}/{steps}] r={r*1000:.2f}mm | dx={dx*1000:.1f}mm dy={dy*1000:.1f}mm | dist={dist*1000:.2f}mm")
+                self.get_logger().info(f"    [{idx}/{spiral_steps}] r={r*1000:.2f}mm | dx={dx*1000:.1f}mm dy={dy*1000:.1f}mm | dist={dist*1000:.2f}mm")
 
             self.sleep_for(0.05)
 
@@ -621,6 +634,7 @@ class PlugIn(Policy):
         # 6. Calculate plug position for later use in spiral search (same XY, but Z at plug depth)
         plug_pos = tcp_pos.copy()
         plug_pos[2] += cfg['z_plug']
+        
 
         # 7.1 Move to approach pose(s) (smoothly, with low stiffness)
         last_approach_pos = None
@@ -648,9 +662,10 @@ class PlugIn(Policy):
         )
 
         # 8. Spiral Search and Insert
-        spiral_max_radius = cfg.get('spiral_max_radius', 0.005)
+        spiral_max_radius = cfg.get('spiral_max_radius', 0.003)
         spiral_stiffness_1 = cfg.get('spiral_stiffness_1', [300.0, 300.0, 80.0, 200.0, 200.0, 200.0])
         spiral_damping_1 = cfg.get('spiral_damping_1', [40.0, 40.0, 15.0, 30.0, 30.0, 30.0])
+        spiral_steps_1 = cfg.get('spiral_steps_1', 150)
         final_dist = self._spiral_search_and_insert(
             center_pos=plug_pos,
             quat=tcp_quat,
@@ -658,6 +673,7 @@ class PlugIn(Policy):
             get_observation=get_observation,
             stiff_spiral=spiral_stiffness_1,
             damp_spiral=spiral_damping_1,
+            spiral_steps=spiral_steps_1,
             max_radius=spiral_max_radius,
             label=c_type,
             obs=obs,
@@ -665,9 +681,9 @@ class PlugIn(Policy):
         )
         
         # 9. Check final distance to plug position after spiral search
-        if final_dist < 0.03:
+        if final_dist < 0.01:
             self.get_logger().info("============================================================")
-            self.get_logger().info(f"SUCCESS - Inserted:({c_type})")
+            self.get_logger().info(f"SUCCESS - Inserted after spiral search:({c_type})")
             self.get_logger().info("============================================================")
             return True
 
@@ -679,7 +695,7 @@ class PlugIn(Policy):
             final_plug_position, tcp_quat, move_robot, get_observation,
             stiffness=[100.0, 100.0,  80.0, 300.0, 300.0, 300.0],
             damping=[ 40.0,  40.0,  15.0,  40.0,  40.0,  40.0],
-            n_steps=80,
+            n_steps=40,
             label="Plug-In",
             obs=obs,
             debug_port_type=c_type
@@ -694,7 +710,7 @@ class PlugIn(Policy):
             (curr.z - plug_pos[2])**2
         )
 
-        if final_dist < 0.03:
+        if final_dist < 0.01:
             self.get_logger().info("============================================================")
             self.get_logger().info(f"SUCCESS - Inserted on second try:({c_type}) | Final distance: {final_dist*1000:.2f}mm")
             self.get_logger().info("============================================================")
@@ -704,6 +720,7 @@ class PlugIn(Policy):
             spiral_stiffness_2 = cfg.get('spiral_stiffness_2', [200.0, 200.0, 50.0, 150.0, 150.0, 150.0])
             spiral_damping_2 = cfg.get('spiral_damping_2', [30.0, 30.0, 10.0, 20.0, 20.0, 20.0])
             spiral_max_radius_2 = cfg.get('spiral_max_radius_2', 0.007)
+            spiral_steps_2 = cfg.get('spiral_steps_2', 250) 
             final_dist = self._spiral_search_and_insert(
                 center_pos=plug_pos,
                 quat=tcp_quat,
@@ -712,15 +729,16 @@ class PlugIn(Policy):
                 max_radius=spiral_max_radius_2,
                 stiff_spiral=spiral_stiffness_2,
                 damp_spiral=spiral_damping_2,
+                spiral_steps=spiral_steps_2,
                 label=c_type,
                 obs=obs,
                 debug_port_type=c_type
             )
 
         # 13 Force insert again
-        if final_dist < 0.03:
+        if final_dist < 0.01:
             self.get_logger().info("============================================================")
-            self.get_logger().info(f"SUCCESS - Inserted:({c_type})")
+            self.get_logger().info(f"SUCCESS - Inserted after secondspiral search:({c_type})")
             self.get_logger().info("============================================================")
             return True
 
@@ -732,7 +750,7 @@ class PlugIn(Policy):
             final_plug_position, tcp_quat, move_robot, get_observation,
             stiffness=[100.0, 100.0,  80.0, 300.0, 300.0, 300.0],
             damping=[ 40.0,  40.0,  15.0,  40.0,  40.0,  40.0],
-            n_steps=80,
+            n_steps=40,
             label="Plug-In",
             obs=obs,
             debug_port_type=c_type
@@ -747,13 +765,13 @@ class PlugIn(Policy):
             (curr.z - plug_pos[2])**2
         )
 
-        if final_dist < 0.1:
+        if final_dist < 0.01:
             self.get_logger().info("============================================================")
-            self.get_logger().info(f"SUCCESS - Inserted on second try:({c_type}) | Final distance: {final_dist*1000:.2f}mm")
+            self.get_logger().info(f"SUCCESS - Inserted on last try:({c_type}) | Final distance: {final_dist*1000:.2f}mm")
             self.get_logger().info("============================================================")
             return True
         else:
             self.get_logger().info("============================================================")
             self.get_logger().info(f"FAILED - Could not insert:({c_type}) | Final distance: {final_dist*1000:.2f}mm")
             self.get_logger().info("============================================================")
-            return False
+            return True

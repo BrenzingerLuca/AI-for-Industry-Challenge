@@ -21,13 +21,15 @@ Bugs to fix next:
 
 ```bash
 /entrypoint.sh   ground_truth:=true   start_aic_engine:=false   spawn_task_board:=true   nic_card_mount_0_present:=true nic_card_mount_0_translation:=-0.08 spawn_cable:=true cable_type:=sfp_sc_cable attach_cable_to_gripper:=true
+
+/entrypoint.sh   spawn_task_board:=true   sc_port_0_present:=true   sc_mount_rail_0_present:=true   spawn_cable:=true   cable_type:=sfp_sc_cable_reversed   attach_cable_to_gripper:=true   ground_truth:=true   start_aic_engine:=false
 ```
 
 2. Terminal with (plugin package):
 ```bash
 cd ~/ws_aic/src/aic
 pixi shell
-pixi run ros2 run aic_model aic_model --ros-args -p use_sim_time:=true -p policy:=aic_solution_policy.Plug_in
+pixi run ros2 run aic_model aic_model --ros-args -p use_sim_time:=true -p policy:=aic_solution_policy.PlugIn
 ```
 
 3. Terminal with (plugin package):
@@ -38,8 +40,35 @@ ros2 lifecycle get /aic_model
 ros2 lifecycle set /aic_model configure
 ros2 lifecycle set /aic_model activate
 
-ros2 action send_goal /insert_cable aic_task_interfaces/action/InsertCable "{task: {id: 'cable_1', cable_type: 'sfp', cable_name: 'sfp_cable', plug_type: 'sfp', plug_name: 'sfp_plug', port_type: 'sfp', port_name: 'sfp_port_0', target_module_name: 'nic_card_0', time_limit: 60}}"
+ros2 action send_goal /insert_cable aic_task_interfaces/action/InsertCable 
+    "{task: {
+        id: 'cable_1', 
+        cable_type: 'sfp', 
+        cable_name: 'sfp_cable', 
+        plug_type: 'sfp', 
+        plug_name: 'sfp_plug', 
+        port_type: 'sfp', 
+        port_name: 'sfp_port_0', 
+        target_module_name: 'nic_card_0', 
+        time_limit: 60
+            }
+    }"
+
+ros2 action send_goal /insert_cable aic_task_interfaces/action/InsertCable \
+"{task: {
+  id: 'cable_1',
+  cable_type: 'sc',
+  cable_name: 'sc_cable',
+  plug_type: 'sc',
+  plug_name: 'sc_plug',
+  port_type: 'sc',
+  port_name: 'sc_port_0',
+  target_module_name: 'sc_mount_rail_0',
+  time_limit: 60
+}}"
 ```
+
+
 
 ### Testing Evaluation
 
