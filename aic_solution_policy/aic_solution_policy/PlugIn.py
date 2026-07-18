@@ -21,10 +21,17 @@ import torchvision
 
 # Must exactly match residual_policy.ipynb's preprocessing/architecture --
 # we load that notebook's saved state_dict directly, so any mismatch here
-# (image size, camera order, layer shapes) silently produces garbage
-# predictions instead of an error.
+# (image size, camera order, crop box, layer shapes) silently produces
+# garbage predictions instead of an error.
 _RESIDUAL_IMAGE_SIZE = 128
 _RESIDUAL_CAMS = ['left', 'center', 'right']
+# Must match CFG["crop"] in residual_policy.ipynb -- the model was trained
+# on these fixed per-camera ROIs (crop, then resize), not the raw frame.
+_RESIDUAL_CROP = {
+    'left': (560, 600, 740, 760),
+    'center': (480, 560, 660, 720),
+    'right': (420, 600, 600, 760),
+}
 _RESIDUAL_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _RESIDUAL_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
@@ -114,7 +121,7 @@ class PlugIn(Policy):
                 'off_pos': [0.0, 0.0004, -0.05795],
                 'off_quat': [0.17785, 0.00505, -0.02738, -0.98366],
                 'z_approach_1': 0.02,
-                'z_approach_2': 0.005,
+                'z_approach_2': -0.003,
                 'z_plug': -0.045,
                 'cable_tip_frame': "cable_0/sfp_tip_link",
                 'search_insert_strategy_1' : "_spiral_search_and_insert_2d",
@@ -197,9 +204,15 @@ class PlugIn(Policy):
             'target_std': np.asarray(checkpoint['target_std'], dtype=np.float32),
         }
 
-    def _preprocess_image_for_residual_model(self, img_bgr):
-        """Must mirror residual_policy.ipynb's OffsetDataset._load_image exactly."""
+    def _preprocess_image_for_residual_model(self, img_bgr, cam):
+        """Must mirror residual_policy.ipynb's OffsetDataset._load_image exactly
+        (crop to the fixed per-camera ROI, then resize -- no train-time
+        augmentation here, this is eval-mode preprocessing)."""
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        box = _RESIDUAL_CROP.get(cam)
+        if box is not None:
+            x0, y0, x1, y1 = box
+            img_rgb = img_rgb[y0:y1, x0:x1]
         img_resized = cv2.resize(img_rgb, (_RESIDUAL_IMAGE_SIZE, _RESIDUAL_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
         img_norm = img_resized.astype(np.float32) / 255.0
         img_norm = (img_norm - _RESIDUAL_IMAGENET_MEAN) / _RESIDUAL_IMAGENET_STD
@@ -223,7 +236,7 @@ class PlugIn(Policy):
                 self.get_logger().warning(f"Residual model: missing '{cam}' image, skipping correction")
                 return None
             cv_img = self._bridge.imgmsg_to_cv2(img_msg, "bgr8")
-            images.append(self._preprocess_image_for_residual_model(cv_img))
+            images.append(self._preprocess_image_for_residual_model(cv_img, cam))
         images_tensor = torch.stack(images, dim=0).unsqueeze(0).to(self._residual_device)
 
         with torch.no_grad():
