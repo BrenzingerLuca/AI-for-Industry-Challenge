@@ -1,3 +1,5 @@
+import os
+import cv2
 import numpy as np
 import math
 from scipy.spatial.transform import Rotation as R
@@ -12,6 +14,56 @@ from aic_model.policy import (
     SendFeedbackCallback,
 )
 from std_srvs.srv import Trigger
+
+import torch
+import torch.nn as nn
+import torchvision
+
+# Must exactly match residual_policy.ipynb's preprocessing/architecture --
+# we load that notebook's saved state_dict directly, so any mismatch here
+# (image size, camera order, layer shapes) silently produces garbage
+# predictions instead of an error.
+_RESIDUAL_IMAGE_SIZE = 128
+_RESIDUAL_CAMS = ['left', 'center', 'right']
+_RESIDUAL_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+_RESIDUAL_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+
+class _SharedViewEncoder(nn.Module):
+    """Same architecture as residual_policy.ipynb's SharedViewEncoder."""
+
+    def __init__(self, out_dim, pretrained=False):
+        super().__init__()
+        weights = torchvision.models.ResNet18_Weights.DEFAULT if pretrained else None
+        backbone = torchvision.models.resnet18(weights=weights)
+        backbone.fc = nn.Identity()
+        self.backbone = backbone
+        self.proj = nn.Linear(512, out_dim)
+
+    def forward(self, x):
+        return self.proj(self.backbone(x))
+
+
+class _MultiViewRegressor(nn.Module):
+    """Same architecture as residual_policy.ipynb's MultiViewRegressor."""
+
+    def __init__(self, num_cams, feat_dim, hidden, out_dim=6):
+        super().__init__()
+        self.num_cams = num_cams
+        self.encoder = _SharedViewEncoder(feat_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(feat_dim * num_cams, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, out_dim),
+        )
+
+    def forward(self, images):
+        b, n, c, h, w = images.shape
+        feats = self.encoder(images.reshape(b * n, c, h, w)).reshape(b, n * self.encoder.proj.out_features)
+        return self.mlp(feats)
+
 
 class PlugIn(Policy):
     def __init__(self, parent_node):
@@ -51,7 +103,8 @@ class PlugIn(Policy):
                 'spiral_stiffness_2': [150.0, 150.0, 30.0, 300.0, 300.0, 10.0],
                 'spiral_damping_2': [30.0, 30.0, 10.0, 30.0, 30.0, 30.0],
                 'spiral_steps_1': 150,
-                'spiral_steps_2': 250
+                'spiral_steps_2': 250,
+                'residual_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/sc_regressor_best.pt",
             },
 
             'sfp': {
@@ -72,7 +125,8 @@ class PlugIn(Policy):
                 'spiral_stiffness_2': [300.0, 300.0, 120.0, 200.0, 200.0, 200.0],
                 'spiral_damping_2': [40.0, 40.0, 20.0, 30.0, 30.0, 30.0],
                 'spiral_steps_1': 120,
-                'spiral_steps_2': 250
+                'spiral_steps_2': 250,
+                'residual_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/regressor_best.pt",
             }
         }
 
@@ -87,6 +141,28 @@ class PlugIn(Policy):
             except Exception as e:
                 self.get_logger().error(f"Failed to load YOLO model for '{c_type}': {e}")
                 self._models[c_type] = None
+
+        # ROS param so the correction can be A/B-tested without rebuilding the package.
+        self._parent_node.declare_parameter('residual_correction.enabled', True)
+
+        # Load the trained offset-correction model(s) from residual_policy.ipynb, one
+        # per connector type. Runs on CPU: it's a single forward pass per insert_cable
+        # call, not worth risking GPU contention with the sim for.
+        self._residual_device = torch.device('cpu')
+        self._residual_models = {}
+        for c_type, cfg in self._configs.items():
+            model_path = cfg.get('residual_model_path')
+            if not model_path or not os.path.isfile(model_path):
+                self.get_logger().warning(
+                    f"No residual correction checkpoint for '{c_type}' at {model_path!r}; "
+                    f"approach-pose correction will be skipped for this connector type."
+                )
+                continue
+            try:
+                self._residual_models[c_type] = self._load_residual_model(model_path)
+                self.get_logger().info(f"Loaded residual correction model [{c_type}]: {model_path}")
+            except Exception as e:
+                self.get_logger().error(f"Failed to load residual correction model for '{c_type}': {e}")
 
     def on_cleanup(self):
         """Clean up policy state on lifecycle cleanup.
@@ -104,6 +180,95 @@ class PlugIn(Policy):
         self._last_tip_offset_debug_monotonic_s = None
         
         self.get_logger().info("PlugIn on_cleanup: Done")
+
+    # --- Residual offset-correction model (trained in residual_policy.ipynb) ---
+    def _load_residual_model(self, checkpoint_path):
+        # weights_only=False: trusted, self-produced checkpoint (contains numpy
+        # target_mean/std alongside the state_dict, which torch's default
+        # weights_only=True safe-unpickler may reject).
+        checkpoint = torch.load(checkpoint_path, map_location=self._residual_device, weights_only=False)
+        model = _MultiViewRegressor(num_cams=len(_RESIDUAL_CAMS), feat_dim=256, hidden=256)
+        model.load_state_dict(checkpoint['model'])
+        model.to(self._residual_device)
+        model.eval()
+        return {
+            'model': model,
+            'target_mean': np.asarray(checkpoint['target_mean'], dtype=np.float32),
+            'target_std': np.asarray(checkpoint['target_std'], dtype=np.float32),
+        }
+
+    def _preprocess_image_for_residual_model(self, img_bgr):
+        """Must mirror residual_policy.ipynb's OffsetDataset._load_image exactly."""
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        img_resized = cv2.resize(img_rgb, (_RESIDUAL_IMAGE_SIZE, _RESIDUAL_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
+        img_norm = img_resized.astype(np.float32) / 255.0
+        img_norm = (img_norm - _RESIDUAL_IMAGENET_MEAN) / _RESIDUAL_IMAGENET_STD
+        return torch.from_numpy(img_norm.transpose(2, 0, 1))
+
+    def _predict_offset_correction(self, observation, cable_type):
+        """Runs the trained offset-correction model on the current camera images.
+
+        Returns [dx,dy,dz] (meters) + [droll,dpitch,dyaw] (degrees): the
+        model's estimate of the cable tip's current pose relative to the
+        port, in the port's frame -- or None if no model/images are available.
+        """
+        bundle = self._residual_models.get(cable_type)
+        if bundle is None or observation is None:
+            return None
+
+        images = []
+        for cam in _RESIDUAL_CAMS:
+            img_msg = getattr(observation, f"{cam}_image", None)
+            if img_msg is None:
+                self.get_logger().warning(f"Residual model: missing '{cam}' image, skipping correction")
+                return None
+            cv_img = self._bridge.imgmsg_to_cv2(img_msg, "bgr8")
+            images.append(self._preprocess_image_for_residual_model(cv_img))
+        images_tensor = torch.stack(images, dim=0).unsqueeze(0).to(self._residual_device)
+
+        with torch.no_grad():
+            pred_norm = bundle['model'](images_tensor)[0].cpu().numpy()
+
+        return pred_norm * bundle['target_std'] + bundle['target_mean']
+
+    def _apply_predicted_correction(self, tcp_pos, tcp_quat, off_pos, off_quat,
+                                     predicted_offset, correct_z=False):
+        """Shifts a TCP pose so the cable tip cancels out `predicted_offset`
+        (the tip's currently-predicted pose relative to the port, in the
+        port's frame -- same convention as compute_relative_offset() in
+        residual_policy.ipynb: [dx,dy,dz] meters + [droll,dpitch,dyaw] degrees).
+
+        Depth (dz) is ignored by default: the training data randomized dz
+        deliberately (for view diversity), it doesn't represent an alignment
+        error to fix, and Z is already governed by z_approach/z_plug -- this
+        correction only fixes lateral/rotational alignment.
+
+        The cable tip and gripper/tcp differ by a fixed, non-identity
+        rotation (off_quat), so a correction expressed in the tip's own
+        frame has to be conjugated by that offset before it can be composed
+        onto the TCP pose directly (see PR discussion / derivation notes).
+        """
+        dx, dy, dz, droll, dpitch, dyaw = predicted_offset
+        if not correct_z:
+            dz = 0.0
+
+        r_pred = R.from_euler('xyz', [droll, dpitch, dyaw], degrees=True)
+        delta_pos_tip = -np.array([dx, dy, dz])
+        delta_rot_tip = r_pred.inv()
+
+        r_k = R.from_quat(off_quat)   # tip -> TCP fixed rotation
+        t_k = np.array(off_pos)       # tip -> TCP fixed translation, in tip frame
+
+        r_tcp_old = R.from_quat(tcp_quat)
+        r_tip_old = r_tcp_old * r_k.inv()
+
+        pos_correction = r_tip_old.apply(delta_pos_tip + delta_rot_tip.apply(t_k) - t_k)
+        tcp_pos_new = np.array(tcp_pos) + pos_correction
+
+        rot_correction_tcp_frame = r_k.inv() * delta_rot_tip * r_k
+        tcp_quat_new = (r_tcp_old * rot_correction_tcp_frame).as_quat()
+
+        return tcp_pos_new, tcp_quat_new
 
     # --- Triangulation & Detection ---
     def _get_cam_frame_data(self, cam_full_name):
@@ -552,6 +717,9 @@ class PlugIn(Policy):
         5. Calculate approach pose (same XY, but Z raised by approach offset)
         6. Calculate plug position for later use in spiral search (same XY, but Z at plug depth)
         7.1 Move to approach pose (smoothly, with low stiffness)
+        7.15 Run the trained offset-correction model once on the camera images
+             at the approach pose and shift tcp_pos/tcp_quat/plug_pos to cancel
+             out its predicted tip-to-port offset
         7.2 Increase stiffness for better allignemt before spiral search
         8. Spiral Search and Insert
         9. Check final distance to plug position after spiral search
@@ -650,7 +818,35 @@ class PlugIn(Policy):
                 debug_port_type=c_type
             )
 
-        # 7.2 Increase stiffness for better allignemt before spiral search
+        # 7.15 Vision-based residual correction: run the trained offset model on
+        # the camera images at the approach pose (ground truth is NOT used here)
+        # and shift the target pose to cancel out its predicted tip-to-port
+        # offset, so the subsequent stiffening/spiral-search steps start from a
+        # better-aligned pose. Z is left untouched (see _apply_predicted_correction).
+        residual_enabled = self._parent_node.get_parameter('residual_correction.enabled').value
+        z_approach_last = cfg['z_approach_2'] if 'z_approach_2' in cfg else cfg['z_approach']
+        if residual_enabled:
+            obs = get_observation()
+            predicted_offset = self._predict_offset_correction(obs, c_type)
+            if predicted_offset is not None:
+                dx, dy, dz, droll, dpitch, dyaw = predicted_offset
+                self.get_logger().info(
+                    f"Residual model prediction: dxyz=({dx*1e3:.2f},{dy*1e3:.2f},{dz*1e3:.2f})mm "
+                    f"rpy=({droll:.1f},{dpitch:.1f},{dyaw:.1f})deg"
+                )
+                corrected_approach_pos, tcp_quat = self._apply_predicted_correction(
+                    last_approach_pos, tcp_quat, cfg['off_pos'], cfg['off_quat'], predicted_offset
+                )
+                last_approach_pos = corrected_approach_pos
+                tcp_pos = corrected_approach_pos.copy()
+                tcp_pos[2] -= z_approach_last
+                plug_pos = tcp_pos.copy()
+                plug_pos[2] += cfg['z_plug']
+            else:
+                self.get_logger().warning(f"No residual correction available for '{c_type}', skipping")
+
+        # 7.2 Increase stiffness for better allignemt before spiral search -- also
+        # serves as the move to the (possibly corrected) last_approach_pos above.
         self._move_tcp_smooth_cartesian(
             last_approach_pos, tcp_quat, move_robot, get_observation,
             stiffness=[400.0]*6,
