@@ -40,7 +40,7 @@ ros2 lifecycle get /aic_model
 ros2 lifecycle set /aic_model configure
 ros2 lifecycle set /aic_model activate
 
-ros2 action send_goal /insert_cable aic_task_interfaces/action/InsertCable 
+ros2 action send_goal /insert_cable aic_task_interfaces/action/InsertCable \
     "{task: {
         id: 'cable_1', 
         cable_type: 'sfp', 
@@ -69,6 +69,63 @@ ros2 action send_goal /insert_cable aic_task_interfaces/action/InsertCable \
 ```
 
 
+
+### Data Acquisition (offset-correction training data)
+
+`data_acquisition.py` implements a `data_acquisition` policy (note: lowercase, matching the
+filename, since `aic_model`'s dynamic loader looks up a class named after the last
+component of the `policy` parameter). For each configured port it moves the TCP so the
+cable tip is perfectly aligned with the port (using ground-truth TF, no vision), then
+repeatedly perturbs that pose by a random tip-local offset and records the three camera
+images plus the *actual* tip/TCP/port poses into an HDF5 file — one file per run, one
+group per port.
+
+Requires `ground_truth:=true` (published port/tip frames come from `/scoring/tf`). All
+behavior is controlled via `data_acquisition.*` ROS parameters (see `__init__` in
+`data_acquisition.py` for defaults) — the `Task` sent to the action is only used to
+trigger the run, its fields are otherwise ignored.
+
+1. Terminal with (start simulation, all 5 NIC card mounts + sfp/sc cable attached):
+
+```bash
+/entrypoint.sh   ground_truth:=true   start_aic_engine:=false   spawn_task_board:=true   nic_card_mount_0_present:=true nic_card_mount_0_translation:=-0.08   nic_card_mount_1_present:=true nic_card_mount_1_translation:=-0.04   nic_card_mount_2_present:=true nic_card_mount_2_translation:=0.0   nic_card_mount_3_present:=true nic_card_mount_3_translation:=0.04   nic_card_mount_4_present:=true nic_card_mount_4_translation:=0.08   spawn_cable:=true cable_type:=sfp_sc_cable attach_cable_to_gripper:=true
+```
+
+2. Terminal with (policy node):
+```bash
+cd ~/ws_aic/src/aic
+pixi shell
+pixi run ros2 run aic_model aic_model --ros-args -p use_sim_time:=true -p policy:=aic_solution_policy.data_acquisition \
+    -p data_acquisition.num_samples_per_port:=100 \
+    -p 'data_acquisition.ports:=[nic_card_mount_0:sfp_port_0,nic_card_mount_0:sfp_port_1,nic_card_mount_1:sfp_port_0,nic_card_mount_1:sfp_port_1]'
+```
+
+`data_acquisition.output_dir` defaults to `src/aic/aic_solution/dataset/hdf5` (shared with
+`residual_policy.ipynb`'s `CFG["data_glob"]`/`ckpt_dir`/`log_dir`, and with `PlugIn.py`'s
+`residual_model_path` entries) — override with `-p data_acquisition.output_dir:=...` if you want
+somewhere else.
+
+`data_acquisition.ports` is a list of `target_module_name:port_name` pairs (default: both SFP ports on all 5 NIC card mounts) — each card actually has *two* SFP ports, so pass whichever (card, port) combinations you want scanned. A pair whose TF frame doesn't exist just gets skipped with a warning, not aborted.
+
+3. Terminal to configure/activate and trigger the run (Task fields are ignored, any
+   valid Task will do):
+```bash
+cd ~/ws_aic/src/aic
+pixi shell
+ros2 lifecycle set /aic_model configure
+ros2 lifecycle set /aic_model activate
+
+ros2 action send_goal /insert_cable aic_task_interfaces/action/InsertCable \
+"{task: {id: 'data_acq_1', cable_type: 'sfp', port_type: 'sfp', time_limit: 3600}}"
+```
+
+Output: `<output_dir>/sfp_dataset_<timestamp>.hdf5`, with one group per
+`<target_module_name>_<port_name>` containing `images/{left,center,right}`,
+`tip_pose`, `tcp_pose`, `port_pose` (all `[x,y,z,qx,qy,qz,qw]`), `offset`
+(`[dx,dy,dz,droll,dpitch,dyaw]`) and `timestamp` datasets.
+
+Requires the `h5py` conda dependency added to the workspace `pixi.toml` — run
+`pixi install` (or your usual lock/update command) after pulling this change.
 
 ### Testing Evaluation
 
