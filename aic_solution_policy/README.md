@@ -107,6 +107,25 @@ somewhere else.
 
 `data_acquisition.ports` is a list of `target_module_name:port_name` pairs (default: both SFP ports on all 5 NIC card mounts) — each card actually has *two* SFP ports, so pass whichever (card, port) combinations you want scanned. A pair whose TF frame doesn't exist just gets skipped with a warning, not aborted.
 
+**SC ports**: the `aic_eval` image actually running in this env (`ghcr.io/intrinsic-dev/aic/aic_eval:latest`, baked at build time -- *not* the same as the `aic_description` source checked into this repo, which has since been extended to 5 slots but that version isn't what's deployed here) only wires up **2** SC ports: `sc_port_0` (rail 0, Y=0.0295) and `sc_port_1` (rail 1, Y=0.0705) -- one per rail. `sc_port_2`/`3`/`4` are declared as no-ops in this build; setting them `present:=true` silently does nothing. Each present port's port TF name is the fixed `sc_port_base` (not an index), and `data_acquisition.cable_type` must be set to `sc` (not `sfp`) so the ground-truth `sc_tip_link` cable-tip frame is used. This is a *different* system from `sc_mount_rail_0`/`1` (a single shared-rail mount slot, same family as `lc_mount_rail`/`sfp_mount_rail`) -- don't confuse the two.
+
+```bash
+/entrypoint.sh \
+  ground_truth:=true \
+  start_aic_engine:=false \
+  spawn_task_board:=true \
+  sc_port_0_present:=true sc_port_0_translation:=0.0 \
+  sc_port_1_present:=true sc_port_1_translation:=0.0 \
+  spawn_cable:=true cable_type:=sfp_sc_cable_reversed attach_cable_to_gripper:=true
+```
+
+```bash
+pixi run ros2 run aic_model aic_model --ros-args -p use_sim_time:=true -p policy:=aic_solution_policy.data_acquisition \
+    -p data_acquisition.cable_type:=sc \
+    -p data_acquisition.num_samples_per_port:=200 \
+    -p 'data_acquisition.ports:=[sc_port_0:sc_port_base,sc_port_1:sc_port_base]'
+```
+
 3. Terminal to configure/activate and trigger the run (Task fields are ignored, any
    valid Task will do):
 ```bash
