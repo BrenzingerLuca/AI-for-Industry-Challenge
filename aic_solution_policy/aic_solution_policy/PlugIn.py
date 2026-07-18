@@ -27,10 +27,19 @@ _RESIDUAL_IMAGE_SIZE = 128
 _RESIDUAL_CAMS = ['left', 'center', 'right']
 # Must match CFG["crop"] in residual_policy.ipynb -- the model was trained
 # on these fixed per-camera ROIs (crop, then resize), not the raw frame.
+# Keyed by cable_type first (matches residual_policy.ipynb's CFG["crop"])
+# since SC and SFP connectors sit in different parts of the frame.
 _RESIDUAL_CROP = {
-    'left': (560, 600, 740, 760),
-    'center': (480, 560, 660, 720),
-    'right': (420, 600, 600, 760),
+    'sfp': {
+        'left': (560, 600, 740, 760),
+        'center': (480, 560, 660, 720),
+        'right': (420, 600, 600, 760),
+    },
+    'sc': {
+        'left': (570, 660, 710, 800),
+        'center': (500, 660, 640, 800),
+        'right': (430, 660, 570, 800),
+    },
 }
 _RESIDUAL_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _RESIDUAL_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -99,7 +108,7 @@ class PlugIn(Policy):
                 'off_pos': [0.0, -0.015385, -0.04045],
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
                 'z_approach_1': 0.03,
-                'z_approach_2': 0.0025,
+                'z_approach_2': -0.03,
                 'z_plug': -0.03,
                 'cable_tip_frame': "cable_0/sc_tip_link",
                 'search_insert_strategy_1' : "_spiral_search_and_insert_2d",
@@ -111,7 +120,12 @@ class PlugIn(Policy):
                 'spiral_damping_2': [30.0, 30.0, 10.0, 30.0, 30.0, 30.0],
                 'spiral_steps_1': 150,
                 'spiral_steps_2': 250,
-                'residual_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/sc_regressor_best.pt",
+                'residual_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/regressor_best_sc.pt",
+                # Not loaded/used yet -- PlugIn only runs the regressor at
+                # inference time (see _load_residual_model / _MultiViewRegressor).
+                # Stored here so the path is ready if diffusion inference gets
+                # wired up later.
+                'residual_diffusion_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/diffusion_best_sc.pt",
             },
 
             'sfp': {
@@ -133,7 +147,9 @@ class PlugIn(Policy):
                 'spiral_damping_2': [40.0, 40.0, 20.0, 30.0, 30.0, 30.0],
                 'spiral_steps_1': 120,
                 'spiral_steps_2': 250,
-                'residual_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/regressor_best.pt",
+                'residual_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/regressor_best_sfp.pt",
+                # Not loaded/used yet -- see the 'sc' entry's comment above.
+                'residual_diffusion_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/diffusion_best_sfp.pt",
             }
         }
 
@@ -204,12 +220,12 @@ class PlugIn(Policy):
             'target_std': np.asarray(checkpoint['target_std'], dtype=np.float32),
         }
 
-    def _preprocess_image_for_residual_model(self, img_bgr, cam):
+    def _preprocess_image_for_residual_model(self, img_bgr, cam, cable_type):
         """Must mirror residual_policy.ipynb's OffsetDataset._load_image exactly
-        (crop to the fixed per-camera ROI, then resize -- no train-time
-        augmentation here, this is eval-mode preprocessing)."""
+        (crop to the fixed per-camera ROI for this cable_type, then resize --
+        no train-time augmentation here, this is eval-mode preprocessing)."""
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        box = _RESIDUAL_CROP.get(cam)
+        box = _RESIDUAL_CROP.get(cable_type, {}).get(cam)
         if box is not None:
             x0, y0, x1, y1 = box
             img_rgb = img_rgb[y0:y1, x0:x1]
@@ -236,7 +252,7 @@ class PlugIn(Policy):
                 self.get_logger().warning(f"Residual model: missing '{cam}' image, skipping correction")
                 return None
             cv_img = self._bridge.imgmsg_to_cv2(img_msg, "bgr8")
-            images.append(self._preprocess_image_for_residual_model(cv_img, cam))
+            images.append(self._preprocess_image_for_residual_model(cv_img, cam, cable_type))
         images_tensor = torch.stack(images, dim=0).unsqueeze(0).to(self._residual_device)
 
         with torch.no_grad():
