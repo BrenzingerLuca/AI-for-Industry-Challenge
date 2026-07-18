@@ -100,6 +100,17 @@ class SfpPlugInPhase1(Policy):
         self._snag_recovery_max_attempts = 5
         self._snag_recovery_max_duration_s = 5.0
 
+        # If straight push retries alone haven't freed it after this many
+        # attempts in a row, back off _snag_recovery_retract_m upward (release
+        # the jam) and try the same lateral spiral search used for port entry
+        # from there, watching for the TCP to sink _snag_recovery_unstick_margin_m
+        # below where it got stuck (i.e. moving again) - repeats every such
+        # block of failed attempts, not just once, before resuming straight
+        # push retries.
+        self._snag_recovery_attempts_before_spiral_search = 3
+        self._snag_recovery_unstick_margin_m = 0.001
+        self._snag_recovery_retract_m = 0.012
+
         # Raw wrist_wrench is untared (fed straight from /fts_broadcaster/wrench,
         # see aic_adapter.cpp) - subtract a baseline measured at task start so a
         # static bias (e.g. tool/plug weight) doesn't get mistaken for contact.
@@ -323,6 +334,41 @@ class SfpPlugInPhase1(Policy):
         )
         return curr_pos, False
 
+    def _retract_up(self, start_pos, quat, move_robot, get_observation,
+                     stiffness, damping, retract_m, velocity_m_s,
+                     label="Retract"):
+        """
+        Ramps the commanded Z straight up by retract_m (XY held fixed at
+        start_pos XY) - the inverse of _ramp_descend's direction, used to
+        back a snag off before the rescue spiral search instead of trying
+        to search laterally while still jammed against whatever it caught on.
+        No stall/force stop check - it's a short, fixed-distance move.
+        """
+        step_dt = self._ramp_step_dt
+        step_distance = velocity_m_s * step_dt
+        n_steps = max(1, int(np.ceil(retract_m / step_distance)))
+
+        self.get_logger().info(
+            f"    {label}: fahre {retract_m * 1000:.1f}mm hoch von z={start_pos[2]:.4f}."
+        )
+
+        curr_pos = start_pos.copy()
+        for i in range(n_steps):
+            traveled = min((i + 1) * step_distance, retract_m)
+            cmd_pos = np.array([start_pos[0], start_pos[1], start_pos[2] + traveled])
+
+            motion_update = self._build_motion_update(cmd_pos, quat, stiffness, damping)
+            move_robot(motion_update=motion_update)
+
+            obs = get_observation()
+            self._check_force_threshold(obs)
+            curr_pos = self._pos_to_array(obs.controller_state.tcp_pose.position)
+
+            self.sleep_for(step_dt)
+
+        self.get_logger().info(f"    {label}: jetzt bei z={curr_pos[2]:.4f}.")
+        return curr_pos
+
     def _move_down_until_contact(self, start_pos, target_pos, quat,
                                   move_robot, get_observation,
                                   force_threshold_n, max_extra_depth_m,
@@ -357,11 +403,21 @@ class SfpPlugInPhase1(Policy):
         stall short of that is treated as a mechanical snag: retry the same
         push with a softened rotational stiffness (_snag_recovery_stiffness)
         so the connector can self-align, up to _snag_recovery_max_attempts
-        times, before giving up.
+        times, before giving up. Every _snag_recovery_attempts_before_spiral_search
+        straight pushes in a row that haven't freed it, it backs off
+        _snag_recovery_retract_m upward first (releases the jam instead of
+        searching laterally while still wedged against it), then tries one
+        lateral spiral search (the same primitive used to find the port
+        entry) from there, on the theory that a snag is usually a local
+        lateral catch that a small sideways search can slip past -
+        this repeats (not just once) for as long as attempts remain, so a
+        push-push-push-rescue cycle keeps recurring until it's either freed
+        or the attempt budget runs out.
         """
         curr_pos = entry_pos.copy()
         stiffness, damping = self._cfg['spiral_stiffness'], self._cfg['spiral_damping']
         attempt_duration = max_duration_s
+        attempts_since_rescue = 0
 
         for attempt in range(self._snag_recovery_max_attempts + 1):
             curr_pos, stopped_early = self._ramp_descend(
@@ -394,6 +450,44 @@ class SfpPlugInPhase1(Policy):
                     f"Recovery-Versuchen - gebe auf."
                 )
                 return curr_pos
+
+            attempts_since_rescue += 1
+            if attempts_since_rescue >= self._snag_recovery_attempts_before_spiral_search:
+                attempts_since_rescue = 0
+                stuck_z = curr_pos[2]
+                self.get_logger().warning(
+                    f"    {label}: nach {self._snag_recovery_attempts_before_spiral_search} weiteren "
+                    f"Versuchen (insgesamt {attempt + 1}) weiterhin fest bei Tiefe="
+                    f"{depth_from_contact * 1000:.1f}mm - versuche laterale Spiralsuche zum Loesen."
+                )
+                curr_pos = self._retract_up(
+                    curr_pos, quat, move_robot, get_observation,
+                    stiffness=stiffness, damping=damping,
+                    retract_m=self._snag_recovery_retract_m,
+                    velocity_m_s=velocity_m_s,
+                    label=f"{label}-Rescue-Retract",
+                )
+                spiral_center = curr_pos.copy()
+                spiral_center[2] -= self._press_margin_m
+                unstuck, curr_pos = self._spiral_search_until_entry(
+                    spiral_center, quat, move_robot, get_observation,
+                    entry_z=stuck_z - self._snag_recovery_unstick_margin_m,
+                    label=f"{label}-Rescue-Spiral",
+                )
+                if unstuck:
+                    self.get_logger().info(
+                        f"    {label}: durch Spiralsuche wieder in Bewegung bei z={curr_pos[2]:.4f} "
+                        f"- setze Einstecken fort."
+                    )
+                else:
+                    self.get_logger().warning(
+                        f"    {label}: Spiralsuche zum Loesen ohne erkannte Bewegung beendet "
+                        f"(letzte z={curr_pos[2]:.4f}) - versuche trotzdem mit reduzierter "
+                        f"Rotations-Steifigkeit weiter."
+                    )
+                stiffness, damping = self._snag_recovery_stiffness, self._snag_recovery_damping
+                attempt_duration = self._snag_recovery_max_duration_s
+                continue
 
             self.get_logger().warning(
                 f"    {label}: verfrueher Stillstand bei Tiefe={depth_from_contact * 1000:.1f}mm "
