@@ -8,6 +8,29 @@ aic_solution_policy/data*
 .ipynb_checkpoints/
 **/.ipynb_checkpoints/
 
-# Falls du auch Python-Bytecode ignorieren willst (empfohlen)
+# Python-Bytecode & Caches
 __pycache__/
 *.py[cod]
+*$py.class
+
+# Virtual Environments (niemals committen!)
+venv/
+.venv/
+env/
+ENV/
+
+# Verteilungs-/Build-Artefakte
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
