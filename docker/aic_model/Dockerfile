@@ -17,7 +17,7 @@ COPY aic_solution /ws_aic/src/aic/aic_solution
 
 SHELL ["/bin/bash", "-c"]
 RUN --mount=type=cache,target=/root/.cache/rattler/cache --mount=type=cache,target=/ws_aic/src/aic/.pixi/build \
-    cd /ws_aic/src/aic && pixi install --locked
+    cd /ws_aic/src/aic && pixi install 
 
 WORKDIR /ws_aic/src/aic
 COPY --chmod=755 <<"EOF" /entrypoint.sh
@@ -58,4 +58,4 @@ exec pixi run --as-is ros2 run aic_model aic_model "$@"
 EOF
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["--ros-args", "-p", "policy:=aic_solution_policy.SoftPlugIn", "-p", "use_sim_time:=true"]
+CMD ["--ros-args", "-p", "policy:=aic_solution_policy.ros.SfpPlugInPhase1", "-p", "use_sim_time:=true"]
