@@ -689,8 +689,8 @@ class SfpPlugInPhase1(Policy):
         )
 
         if not contact_detected:
-            self.get_logger().error("FAILED - Kein Kontakt beim Herunterfahren erkannt.")
-            return False
+            self.get_logger().warning("WARNING - Kein Kontakt beim Herunterfahren erkannt.")
+            
 
         # 4. Spiral search with constant press force, exit on port entry
         spiral_center = contact_pos.copy()

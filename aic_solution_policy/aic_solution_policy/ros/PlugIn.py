@@ -44,6 +44,32 @@ _RESIDUAL_CROP = {
 _RESIDUAL_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _RESIDUAL_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
+def _resolve_aic_solution_dir():
+    """
+    Locate aic_solution/ (parent of dataset/checkpoints and training/models).
+    pixi-build-ros installs this package via a real copy, not a symlink, so
+    at runtime __file__ points into .pixi/envs/.../site-packages rather than
+    the source tree -- prefer PIXI_PROJECT_ROOT (set by `pixi shell`/`pixi
+    run`, see SFP_PLUGIN_PHASE1_TESTING.md) and fall back to the
+    source-tree-relative guess for direct/dev execution outside a pixi
+    environment.
+    """
+    this_file_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = []
+    pixi_root = os.environ.get('PIXI_PROJECT_ROOT')
+    if pixi_root:
+        candidates.append(os.path.join(pixi_root, 'aic_solution'))
+    candidates.append(os.path.normpath(os.path.join(this_file_dir, '..', '..', '..')))
+    for candidate in candidates:
+        if os.path.isdir(os.path.join(candidate, 'dataset', 'checkpoints')):
+            return candidate
+    return candidates[0]
+
+
+_AIC_SOLUTION_DIR = _resolve_aic_solution_dir()
+_CHECKPOINT_DIR = os.path.join(_AIC_SOLUTION_DIR, 'dataset', 'checkpoints')
+_DETECTION_MODEL_DIR = os.path.join(_AIC_SOLUTION_DIR, 'training', 'models')
+
 
 class _SharedViewEncoder(nn.Module):
     """Same architecture as residual_policy.ipynb's SharedViewEncoder."""
@@ -102,9 +128,7 @@ class PlugIn(Policy):
         
         self._configs = {
             'sc': {
-                #'model_path': "/models/single_sc_detection.pt",
-                #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
-                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/single_sc_detection.pt",
+                'model_path': os.path.join(_DETECTION_MODEL_DIR, 'single_sc_detection.pt'),
                 'off_pos': [0.0, -0.015385, -0.04045],
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
                 'z_approach_1': 0.03,
@@ -120,18 +144,16 @@ class PlugIn(Policy):
                 'spiral_damping_2': [30.0, 30.0, 10.0, 30.0, 30.0, 30.0],
                 'spiral_steps_1': 150,
                 'spiral_steps_2': 250,
-                'residual_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/regressor_best_sc.pt",
+                'residual_model_path': os.path.join(_CHECKPOINT_DIR, 'regressor_best_sc.pt'),
                 # Not loaded/used yet -- PlugIn only runs the regressor at
                 # inference time (see _load_residual_model / _MultiViewRegressor).
                 # Stored here so the path is ready if diffusion inference gets
                 # wired up later.
-                'residual_diffusion_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/diffusion_best_sc.pt",
+                'residual_diffusion_model_path': os.path.join(_CHECKPOINT_DIR, 'diffusion_best_sc.pt'),
             },
 
             'sfp': {
-                #'model_path': "/models/best150.pt",
-                #'model_path': "/home/lucab/ws_aic/src/aic/aic_solution/training/models/best150.pt",
-                'model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/training/models/best150.pt",
+                'model_path': os.path.join(_DETECTION_MODEL_DIR, 'best150.pt'),
                 'off_pos': [0.0, 0.0004, -0.05795],
                 'off_quat': [0.17785, 0.00505, -0.02738, -0.98366],
                 'z_approach_1': 0.02,
@@ -147,9 +169,9 @@ class PlugIn(Policy):
                 'spiral_damping_2': [40.0, 40.0, 20.0, 30.0, 30.0, 30.0],
                 'spiral_steps_1': 120,
                 'spiral_steps_2': 250,
-                'residual_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/regressor_best_sfp.pt",
+                'residual_model_path': os.path.join(_CHECKPOINT_DIR, 'regressor_best_sfp.pt'),
                 # Not loaded/used yet -- see the 'sc' entry's comment above.
-                'residual_diffusion_model_path': "/home/intrinsic/ws_aic/src/aic/aic_solution/dataset/checkpoints/diffusion_best_sfp.pt",
+                'residual_diffusion_model_path': os.path.join(_CHECKPOINT_DIR, 'diffusion_best_sfp.pt'),
             }
         }
 
