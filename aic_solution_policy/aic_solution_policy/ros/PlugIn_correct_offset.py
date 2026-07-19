@@ -313,6 +313,10 @@ class PlugIn_correct_offset(Policy):
         if not correct_z:
             dz = 0.0
 
+        droll = 0.0
+        dpitch = 0.0
+        dyaw = 0.0
+
         r_pred = R.from_euler('xyz', [droll, dpitch, dyaw], degrees=True)
         delta_pos_tip = -np.array([dx, dy, dz])
         delta_rot_tip = r_pred.inv()
@@ -906,9 +910,6 @@ class PlugIn_correct_offset(Policy):
             max_duration_s=self._descent_max_duration_s,
         )
 
-        if not contact_detected:
-            self.get_logger().error("FAILED - Kein Kontakt beim Herunterfahren erkannt.")
-            return False
 
         # 3.5 Vision-based residual correction, now that the TCP is in
         # physical contact (ground truth is NOT used here). Shifts
