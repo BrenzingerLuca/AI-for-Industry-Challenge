@@ -182,7 +182,7 @@ class PlugIn_correct_offset(Policy):
                 # start_pos - retreating only up to start_pos in that case
                 # barely clears the snag at all. This margin guarantees real
                 # separation regardless of how shallow the catch was.
-                'retreat_clearance_m': 0.01,
+                'retreat_clearance_m': 0.00,
 
                 # Final-insert snag recovery: the connector needs ~4.6cm total
                 # travel (from the initial contact point) to be fully seated,
