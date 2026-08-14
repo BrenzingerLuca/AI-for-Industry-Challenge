@@ -71,5 +71,4 @@ flowchart TD
 ## Suggested visuals
 
 - A force/Z-position plot over one insertion run (from the `wrist_wrench`
-  log) showing the contact and seating events described above — see
-  [docs/media/README.md](media/README.md).
+  log) showing the contact and seating events described above.

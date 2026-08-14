@@ -45,6 +45,6 @@ flowchart LR
 ## Suggested visuals
 
 - RViz/Gazebo screenshot of the triangulated 3D port keypoints overlaid on
-  the scene (see [docs/media/README.md](media/README.md)).
+  the scene.
 - A camera frame with the YOLO keypoint detections drawn on it, side by side
   with the triangulated port frame.

@@ -49,7 +49,7 @@ Phase-1 policy plugging in both connector types:
 
 <video src="https://github.com/user-attachments/assets/f5bd5886-9559-4a56-973c-9471196d7263" width="480" controls></video>
 
-Qualification-round port detection (YOLO keypoints, triangulated into a 3D pose) — *screenshot coming soon, see [docs/media/README.md](docs/media/README.md)*.
+Qualification-round port detection (YOLO keypoints, triangulated into a 3D pose) — *screenshot coming soon*.
 
 ---
 
