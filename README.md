@@ -39,7 +39,7 @@ Phase-1 policy plugging in both connector types:
 
 **SC insertion**
 
-<video src="https://github.com/user-attachments/assets/24a9969e-ccff-41e1-bcb1-2e3e374ae856" width="480" controls></video>
+<video src="https://github.com/user-attachments/assets/24a9969e-ccff-41e1-bcb1-2e3e374ae856" width="240" controls></video>
 
 **SFP insertion**
 
