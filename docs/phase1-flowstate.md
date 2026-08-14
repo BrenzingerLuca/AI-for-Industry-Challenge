@@ -67,8 +67,3 @@ flowchart TD
 **Full insertion process** (both connectors, end to end)
 
 <video src="https://github.com/user-attachments/assets/f5bd5886-9559-4a56-973c-9471196d7263" width="480" controls></video>
-
-## Suggested visuals
-
-- A force/Z-position plot over one insertion run (from the `wrist_wrench`
-  log) showing the contact and seating events described above.

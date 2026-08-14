@@ -42,9 +42,27 @@ flowchart LR
    escalating to a wider/softer second spiral if the first one doesn't
    succeed.
 
-## Suggested visuals
+## Visuals
 
-- RViz/Gazebo screenshot of the triangulated 3D port keypoints overlaid on
-  the scene.
-- A camera frame with the YOLO keypoint detections drawn on it, side by side
-  with the triangulated port frame.
+YOLO keypoint detection on a camera view, SFP port and SC port:
+
+<table>
+  <tr>
+    <td><img src="media/center_camera_sfp_keypoints.png" width="420"></td>
+    <td><img src="media/center_camera_sc_keypoints.png" width="420"></td>
+  </tr>
+</table>
+
+The 4 corner keypoints triangulated from the three camera views (one ray
+color per corner) converging on the port entrance frame:
+
+<table>
+  <tr>
+    <td><img src="media/qualification-rays-corner-0.png" width="300"></td>
+    <td><img src="media/qualification-rays-corner-1.png" width="300"></td>
+  </tr>
+  <tr>
+    <td><img src="media/qualification-rays-corner-2.png" width="300"></td>
+    <td><img src="media/qualification-rays-corner-3.png" width="300"></td>
+  </tr>
+</table>

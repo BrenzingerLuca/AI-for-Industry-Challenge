@@ -27,7 +27,7 @@ import message_filters
 
 # --- CONFIGURATION ---
 MODEL_PATH = '../training/models/single_sc_detection.pt'
-TARGET_FRAME = 'base'               
+TARGET_FRAME = 'base_link'
 PRINT_INTERVAL = 3.0                
 CONFIDENCE_THRESHOLD = 0.70         
 # ---------------------
