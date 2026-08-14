@@ -64,7 +64,9 @@ flowchart TD
 
 <video src="https://github.com/user-attachments/assets/372e5b8e-c86d-4b76-b7c8-ba8532941530" width="480" controls></video>
 
-[▶ Full insertion process](media/full_insertion_process.mp4) (both connectors, end to end — large file, opens in GitHub's file viewer)
+**Full insertion process** (both connectors, end to end)
+
+<video src="https://github.com/user-attachments/assets/f5bd5886-9559-4a56-973c-9471196d7263" width="480" controls></video>
 
 ## Suggested visuals
 
