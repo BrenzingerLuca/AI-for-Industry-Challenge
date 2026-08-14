@@ -56,9 +56,15 @@ flowchart TD
 
 ## Demo
 
-- [▶ SFP insertion](media/phase1-sfp-insert.mp4)
-- [▶ SC insertion](media/phase1-sc-insert.mp4)
-- [▶ Full insertion process](media/full_insertion_process.mp4) (both connectors, end to end)
+**SC insertion**
+
+https://github.com/user-attachments/assets/24a9969e-ccff-41e1-bcb1-2e3e374ae856
+
+**SFP insertion**
+
+https://github.com/user-attachments/assets/372e5b8e-c86d-4b76-b7c8-ba8532941530
+
+[▶ Full insertion process](media/full_insertion_process.mp4) (both connectors, end to end — large file, opens in GitHub's file viewer)
 
 ## Suggested visuals
 
