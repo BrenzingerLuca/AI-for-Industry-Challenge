@@ -39,11 +39,11 @@ Phase-1 policy plugging in both connector types:
 
 **SC insertion**
 
-https://github.com/user-attachments/assets/24a9969e-ccff-41e1-bcb1-2e3e374ae856
+<video src="https://github.com/user-attachments/assets/24a9969e-ccff-41e1-bcb1-2e3e374ae856" width="480" controls></video>
 
 **SFP insertion**
 
-https://github.com/user-attachments/assets/372e5b8e-c86d-4b76-b7c8-ba8532941530
+<video src="https://github.com/user-attachments/assets/372e5b8e-c86d-4b76-b7c8-ba8532941530" width="480" controls></video>
 
 [▶ Full insertion process](docs/media/full_insertion_process.mp4) (both connectors, end to end — large file, opens in GitHub's file viewer)
 
