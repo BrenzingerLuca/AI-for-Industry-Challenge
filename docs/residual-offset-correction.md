@@ -24,6 +24,17 @@ depth and rotation are dropped, since Z is already governed by the
 approach/plug depths (qualification) or the force-controlled descent (phase
 1), and the connector orientation doesn't need correcting.
 
+
+## Why it's needed at all
+
+Neither policy's port-pose estimate is perfect: the qualification round's
+triangulation has its own noise, and FlowState's placement in phase 1 is good
+but not exact. Rather than trying to eliminate that error at the source, this
+model estimates it directly from the cameras and folds a correction into the
+approach pose before the spiral search — cheaper to train than to chase
+perfect calibration.
+
+
 ## Training data
 
 [`data_acquisition.py`](../aic_solution_policy/aic_solution_policy/data_acquisition.py)
@@ -43,15 +54,6 @@ To focus only on the plug-to-port alignment, a region of interest (ROI) is cropp
 
 These cropped images are then further augmented using smaller random crops and slight rotations. This encourages the model to focus on the plug-to-port alignment rather than on the gripper itself. At the same time, the augmentation provides additional training data.
 
-
-## Why it's needed at all
-
-Neither policy's port-pose estimate is perfect: the qualification round's
-triangulation has its own noise, and FlowState's placement in phase 1 is good
-but not exact. Rather than trying to eliminate that error at the source, this
-model estimates it directly from the cameras and folds a correction into the
-approach pose before the spiral search — cheaper to train than to chase
-perfect calibration.
 
 ## Model Architecture
 
