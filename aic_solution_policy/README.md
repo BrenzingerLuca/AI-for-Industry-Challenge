@@ -1,271 +1,37 @@
-# Plug_In Documentation
+# aic_solution_policy
 
-## Status:
+ROS 2 package (ament_python) holding our two insertion policies for the AI
+for Industry Challenge, plus the training-data collection policy.
 
-- Force and Torque Wrench: /fts_broadcaster/wrench
-- TF Frames for Port: task_board/nic_card_mount_0/sfp_port_0_link_entrance
-- TF Frames for Plug Tip: cable_0/sfp_tip_link 
-- TF Frames for TCP: gripper/tcp
+- `aic_solution_policy/ros/qualification/` — `QualificationPlugIn`, the
+  vision-based qualification-round policy.
+- `aic_solution_policy/ros/phase1/` — `Phase1PlugIn`, the force-controlled
+  phase-1 policy (FlowState positions the robot).
+- `aic_solution_policy/ros/residual_offset_model.py` — the offset-correction
+  regressor shared by both.
+- `aic_solution_policy/data_acquisition.py` — collects the training data for
+  that regressor.
+- `residual_policy.ipynb` — trains it.
 
-To send Target Pose we need it from base_link or TCP
+For the story behind the two policies, how they work, and how to run/test
+them, see [`aic_solution/docs/`](../docs/):
 
-Bugs to fix next:
-- Orientation alignment works but position is off
-- Think again how to transorm from tcp to plug tip -> base link and back to entrence...
+- [qualification-phase.md](../docs/qualification-phase.md)
+- [phase1-flowstate.md](../docs/phase1-flowstate.md)
+- [residual-offset-correction.md](../docs/residual-offset-correction.md)
+- [running-and-testing.md](../docs/running-and-testing.md)
 
+## Development
 
-## Getting startet
-
-### Testing single PlugIn
-1. Terminal with (start simulation):
-
+After changing a policy file, reinstall before testing — `pixi-build-ros`
+copies files into the pixi env rather than symlinking them:
 ```bash
-/entrypoint.sh   ground_truth:=true   start_aic_engine:=false   spawn_task_board:=true   nic_card_mount_0_present:=true nic_card_mount_0_translation:=-0.08 spawn_cable:=true cable_type:=sfp_sc_cable attach_cable_to_gripper:=true
-
-/entrypoint.sh   spawn_task_board:=true   sc_port_0_present:=true   sc_mount_rail_0_present:=true   spawn_cable:=true   cable_type:=sfp_sc_cable_reversed   attach_cable_to_gripper:=true   ground_truth:=true   start_aic_engine:=false
-```
-
-2. Terminal with (plugin package):
-```bash
-cd ~/ws_aic/src/aic
-pixi shell
-pixi run ros2 run aic_model aic_model --ros-args -p use_sim_time:=true -p policy:=aic_solution_policy.PlugIn
-```
-
-3. Terminal with (plugin package):
-```bash
-cd ~/ws_aic/src/aic
-pixi shell
-ros2 lifecycle get /aic_model
-ros2 lifecycle set /aic_model configure
-ros2 lifecycle set /aic_model activate
-
-ros2 action send_goal /insert_cable aic_task_interfaces/action/InsertCable \
-    "{task: {
-        id: 'cable_1', 
-        cable_type: 'sfp', 
-        cable_name: 'sfp_cable', 
-        plug_type: 'sfp', 
-        plug_name: 'sfp_plug', 
-        port_type: 'sfp', 
-        port_name: 'sfp_port_0', 
-        target_module_name: 'nic_card_0', 
-        time_limit: 60
-            }
-    }"
-
-ros2 action send_goal /insert_cable aic_task_interfaces/action/InsertCable \
-"{task: {
-  id: 'cable_1',
-  cable_type: 'sc',
-  cable_name: 'sc_cable',
-  plug_type: 'sc',
-  plug_name: 'sc_plug',
-  port_type: 'sc',
-  port_name: 'sc_port_0',
-  target_module_name: 'sc_mount_rail_0',
-  time_limit: 60
-}}"
-```
-
-
-
-### Data Acquisition (offset-correction training data)
-
-`data_acquisition.py` implements a `data_acquisition` policy (note: lowercase, matching the
-filename, since `aic_model`'s dynamic loader looks up a class named after the last
-component of the `policy` parameter). For each configured port it moves the TCP so the
-cable tip is perfectly aligned with the port (using ground-truth TF, no vision), then
-repeatedly perturbs that pose by a random tip-local offset and records the three camera
-images plus the *actual* tip/TCP/port poses into an HDF5 file — one file per run, one
-group per port.
-
-Requires `ground_truth:=true` (published port/tip frames come from `/scoring/tf`). All
-behavior is controlled via `data_acquisition.*` ROS parameters (see `__init__` in
-`data_acquisition.py` for defaults) — the `Task` sent to the action is only used to
-trigger the run, its fields are otherwise ignored.
-
-1. Terminal with (start simulation, all 5 NIC card mounts + sfp/sc cable attached):
-
-```bash
-/entrypoint.sh   ground_truth:=true   start_aic_engine:=false   spawn_task_board:=true   nic_card_mount_0_present:=true nic_card_mount_0_translation:=-0.08   nic_card_mount_1_present:=true nic_card_mount_1_translation:=-0.04   nic_card_mount_2_present:=true nic_card_mount_2_translation:=0.0   nic_card_mount_3_present:=true nic_card_mount_3_translation:=0.04   nic_card_mount_4_present:=true nic_card_mount_4_translation:=0.08   spawn_cable:=true cable_type:=sfp_sc_cable attach_cable_to_gripper:=true
-```
-
-2. Terminal with (policy node):
-```bash
-cd ~/ws_aic/src/aic
-pixi shell
-pixi run ros2 run aic_model aic_model --ros-args -p use_sim_time:=true -p policy:=aic_solution_policy.data_acquisition \
-    -p data_acquisition.num_samples_per_port:=100 \
-    -p 'data_acquisition.ports:=[nic_card_mount_0:sfp_port_0,nic_card_mount_0:sfp_port_1,nic_card_mount_1:sfp_port_0,nic_card_mount_1:sfp_port_1]'
-```
-
-`data_acquisition.output_dir` defaults to `src/aic/aic_solution/dataset/hdf5` (shared with
-`residual_policy.ipynb`'s `CFG["data_glob"]`/`ckpt_dir`/`log_dir`, and with `PlugIn.py`'s
-`residual_model_path` entries) — override with `-p data_acquisition.output_dir:=...` if you want
-somewhere else.
-
-`data_acquisition.ports` is a list of `target_module_name:port_name` pairs (default: both SFP ports on all 5 NIC card mounts) — each card actually has *two* SFP ports, so pass whichever (card, port) combinations you want scanned. A pair whose TF frame doesn't exist just gets skipped with a warning, not aborted.
-
-**SC ports**: the `aic_eval` image actually running in this env (`ghcr.io/intrinsic-dev/aic/aic_eval:latest`, baked at build time -- *not* the same as the `aic_description` source checked into this repo, which has since been extended to 5 slots but that version isn't what's deployed here) only wires up **2** SC ports: `sc_port_0` (rail 0, Y=0.0295) and `sc_port_1` (rail 1, Y=0.0705) -- one per rail. `sc_port_2`/`3`/`4` are declared as no-ops in this build; setting them `present:=true` silently does nothing. Each present port's port TF name is the fixed `sc_port_base` (not an index), and `data_acquisition.cable_type` must be set to `sc` (not `sfp`) so the ground-truth `sc_tip_link` cable-tip frame is used. This is a *different* system from `sc_mount_rail_0`/`1` (a single shared-rail mount slot, same family as `lc_mount_rail`/`sfp_mount_rail`) -- don't confuse the two.
-
-```bash
-/entrypoint.sh \
-  ground_truth:=true \
-  start_aic_engine:=false \
-  spawn_task_board:=true \
-  sc_port_0_present:=true sc_port_0_translation:=0.0 \
-  sc_port_1_present:=true sc_port_1_translation:=0.0 \
-  spawn_cable:=true cable_type:=sfp_sc_cable_reversed attach_cable_to_gripper:=true
-```
-
-```bash
-pixi run ros2 run aic_model aic_model --ros-args -p use_sim_time:=true -p policy:=aic_solution_policy.data_acquisition \
-    -p data_acquisition.cable_type:=sc \
-    -p data_acquisition.num_samples_per_port:=200 \
-    -p 'data_acquisition.ports:=[sc_port_0:sc_port_base,sc_port_1:sc_port_base]'
-```
-
-3. Terminal to configure/activate and trigger the run (Task fields are ignored, any
-   valid Task will do):
-```bash
-cd ~/ws_aic/src/aic
-pixi shell
-ros2 lifecycle set /aic_model configure
-ros2 lifecycle set /aic_model activate
-
-ros2 action send_goal /insert_cable aic_task_interfaces/action/InsertCable \
-"{task: {id: 'data_acq_1', cable_type: 'sfp', port_type: 'sfp', time_limit: 3600}}"
-```
-
-Output: `<output_dir>/sfp_dataset_<timestamp>.hdf5`, with one group per
-`<target_module_name>_<port_name>` containing `images/{left,center,right}`,
-`tip_pose`, `tcp_pose`, `port_pose` (all `[x,y,z,qx,qy,qz,qw]`), `offset`
-(`[dx,dy,dz,droll,dpitch,dyaw]`) and `timestamp` datasets.
-
-Requires the `h5py` conda dependency added to the workspace `pixi.toml` — run
-`pixi install` (or your usual lock/update command) after pulling this change.
-
-### Testing Evaluation
-
-1. Terminal 
-```bash
-cd ws_aic/src/aic 
-pixi shell
-ros2 run aic_model aic_model --ros-args -p use_sim_time:=true -p policy:=aic_solution_policy.PlugIn
-```
-
-2. Terminal
-```bash
-distrobox enter -r aic_eval
-/entrypoint.sh ground_truth:=true start_aic_engine:=true
-```
-
-
-## Developement Guide
-To debug new package versionens 2. Terminal:
-```bash
-exit
 pixi reinstall ros-kilted-aic-solution-policy
 ```
-than again all steps from Terminal 3.
 
-
-## Submission (Abgabe) – Schritt für Schritt
-
-Diese Schritte bauen dein Submission-Image lokal, verifizieren es im lokalen Eval-Stack und laden es anschließend in die Challenge-Registry (ECR) hoch, damit du es im Submission-Portal einreichen kannst.
-
-### Voraussetzungen
-- Docker + Docker Compose Plugin
-- AWS CLI installiert
-- ECR Zugangsdaten + Team-Repository-URI aus der Onboarding-Mail
-- Wichtig: Repository-Namen müssen **lowercase** sein (z.B. `diemanipulatoren`, nicht `DieManipulatoren`).
-- Wichtig: ECR Image-Tags sind **immutable** → für jede neue Abgabe Tag erhöhen (`v1`, `v2`, …).
-
-### 1) Prüfen, dass die richtige Policy im Image gestartet wird
-- In `docker/my_policy/Dockerfile` ist die Policy über `CMD` gesetzt (z.B. `policy:=aic_solution_policy.VisionBasedSFPPlugIn`).
-- In `docker/docker-compose.yaml` muss der `model`-Service auf dieses Dockerfile zeigen.
-- Unser lokales Image heißt in der Regel `my-solution:v1` (nicht `localhost/my-solution:v1`).
-
-### 2) Image lokal bauen
-Aus dem AIC-Root:
-
+If the reinstall itself fails, wipe the pixi build cache and reinstall:
 ```bash
 cd ~/ws_aic/src/aic
-docker compose -f docker/docker-compose.yaml build model
+rm -rf .pixi
+pixi install
 ```
-
-Optionaler Check:
-
-```bash
-docker image ls | grep -E 'my-solution|solution'
-```
-
-### 3) Lokal verifizieren (Pflicht vor dem Push)
-
-```bash
-cd ~/ws_aic/src/aic
-docker compose -f docker/docker-compose.yaml up
-```
-
-Erwartung:
-- Der Stack startet
-- `aic_engine` entdeckt `aic_model` und kann die Lifecycle-Services abfragen
-- Der Trial startet (keine sofortige "Model validation failed" direkt beim Start)
-
-Beenden:
-- `Ctrl+C`
-
-### 4) AWS-Profil konfigurieren (einmalig)
-
-```bash
-aws configure --profile <team_name>
-export AWS_PROFILE=<team_name>
-```
-
-Region: `us-east-1`
-
-### 5) Bei ECR einloggen
-
-```bash
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 973918476471.dkr.ecr.us-east-1.amazonaws.com
-```
-
-### 6) Taggen + Push (Teamname lowercase)
-
-Beispiel (ersetze `<team_name_lowercase>`):
-
-```bash
-docker tag my-solution:v1 973918476471.dkr.ecr.us-east-1.amazonaws.com/aic-team/<team_name_lowercase>:v1
-docker push 973918476471.dkr.ecr.us-east-1.amazonaws.com/aic-team/<team_name_lowercase>:v1
-```
-
-Wenn `:v1` schon existiert (ECR tags immutable), nimm `:v2`, `:v3`, ...
-
-### 7) Submission im Portal registrieren
-
-1. Vollständige Image-URI kopieren (z.B. `973918476471.dkr.ecr.us-east-1.amazonaws.com/aic-team/diemanipulatoren:v1`).
-2. Submission-Portal → Challenge → `Submit`
-3. Phase `Qualification` auswählen
-4. URI im Feld `OCI Image` einfügen
-5. `Submit`
-
-
-## Dokumentation: Submission-Fix (ohne Änderungen an aic_model)
-
-### Kontext / Problem
-
-In der Submission-Umgebung wird sehr früh geprüft, ob der Lifecycle-Node `aic_model` erreichbar ist und auf `GetState` antwortet.
-Wenn dein Policy-Modul beim Import schwere Bibliotheken lädt (z.B. `ultralytics`/`torch`) oder direkt Modelle initialisiert, kann der Import lange dauern.
-Das kann dazu führen, dass `GetState`-Aufrufe in der Engine timeouten und die Submission als "Model validation failed" endet (teilweise ohne hilfreiche Logs im Portal).
-
-### Fix in diesem Package
-
-Datei: `aic_solution_policy/VisionBasedSFPPlugIn.py`
-
-- Heavy Imports (`ultralytics`/`torch`) sind nicht mehr im Modul-Top-Level, sondern werden lazily beim ersten YOLO-Use importiert.
-- Das YOLO-Modell wird nicht mehr im Konstruktor sofort geladen, sondern erst beim ersten `detect_ports()`.
-- `YOLO_CONFIG_DIR` wird auf `/tmp` gesetzt, damit Ultralytics seine Settings auch in restriktiven Container-Umgebungen schreiben kann.
-
-Damit bleibt der Import/Configure-Teil schnell, und `aic_model` kann frühzeitig auf Lifecycle-Requests reagieren.
-

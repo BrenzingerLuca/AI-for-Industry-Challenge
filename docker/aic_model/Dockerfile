@@ -58,4 +58,4 @@ exec pixi run --as-is ros2 run aic_model aic_model "$@"
 EOF
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["--ros-args", "-p", "policy:=aic_solution_policy.ros.SfpPlugInPhase1", "-p", "use_sim_time:=true"]
+CMD ["--ros-args", "-p", "policy:=aic_solution_policy.ros.phase1.Phase1PlugIn", "-p", "use_sim_time:=true"]

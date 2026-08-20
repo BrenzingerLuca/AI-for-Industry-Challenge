@@ -24,7 +24,8 @@ from aic_model.policy import (
 # `expected_policy_class_name = policy_module_name.split(".")[-1]`). To be
 # loadable as `-p policy:=aic_solution_policy.data_acquisition` the class
 # living in this file must therefore be named `data_acquisition`, not
-# `DataAcquisition` -- this mirrors how PlugIn.py must contain `class PlugIn`.
+# `DataAcquisition` -- this mirrors how QualificationPlugIn.py must contain
+# `class QualificationPlugIn`.
 class data_acquisition(Policy):
     """Generates training data for an offset-correcting insertion policy.
 
@@ -40,7 +41,7 @@ class data_acquisition(Policy):
          images plus the *actual* (measured/TF) tip, TCP and port poses --
          not the commanded target -- into an HDF5 dataset.
 
-    Unlike PlugIn.py this policy does not run YOLO detection or attempt
+    Unlike QualificationPlugIn.py this policy does not run YOLO detection or attempt
     insertion: since ground truth TF is required anyway, exact poses are
     read directly from /tf instead of being triangulated from camera
     detections, which also avoids the heavy ultralytics/torch import.
@@ -58,7 +59,7 @@ class data_acquisition(Policy):
         # ever one cable spawned in the current sim setup (attached to the
         # gripper), and it always shows up as "cable_0" regardless of the
         # task's cable_name -- this matches the frame already validated by
-        # PlugIn.py's ground-truth path (_get_tcp_goal_pose).
+        # QualificationPlugIn.py's ground-truth path (_get_tcp_goal_pose).
         self._configs = {
             'sc': {'cable_tip_frame': "cable_0/sc_tip_link"},
             'sfp': {'cable_tip_frame': "cable_0/sfp_tip_link"},

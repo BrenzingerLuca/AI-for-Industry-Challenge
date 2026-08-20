@@ -56,9 +56,11 @@ class SFPFusionNode(Node):
         ]
 
         # --- Configuration ---
-        self.model = YOLO('../training/models/single_sc_detection.pt')
+        # single_sc_detection.pt for SC ports, best150.pt for SFP ports --
+        # must match whichever port type is actually spawned in the sim.
+        self.model = YOLO('../training/models/best150.pt')
         self.camera_names = ['left_camera', 'center_camera', 'right_camera']
-        self.fixed_frame = 'base'  # The global reference frame (e.g., 'world' or 'robot_base')
+        self.fixed_frame = 'base_link'  # The global reference frame (e.g., 'world' or 'robot_base')
 
         self.cam_intrinsics = {}
         self.sync_subs = []
@@ -168,7 +170,7 @@ class SFPFusionNode(Node):
             cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
             
             # Inference using YOLO
-            results = self.model.predict(cv_img, conf=0.90, verbose=False)[0]
+            results = self.model.predict(cv_img, conf=0.70, verbose=False)[0]
             
             for j, box in enumerate(results.boxes):
                 cls = int(box.cls[0]) 
