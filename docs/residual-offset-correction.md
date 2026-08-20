@@ -59,13 +59,23 @@ perfect calibration.
 
 ## Model Evaluation
 
-### SC
+<table>
+  <tr>
+    <th>SC</th>
+    <th>SFP</th>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="media/eval_reg_sc.png" alt="SC prediction error" width="90%">
+    </td>
+    <td align="center">
+      <img src="media/eval_reg_sfp.png" alt="SFP prediction error" width="90%">
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
 
-The plot shows the prediction error:
-
-<p align="center">
-  <img src="media/eval_reg_sc.png" alt="SC prediction error" width="70%">
-</p>
+The plot shows the prediction error.
 
 The following table provides the final model performance.
 
@@ -78,11 +88,10 @@ The following table provides the final model performance.
 | dpitch (deg) | 0.517 |
 | dyaw (deg)   | 0.601 |
 
-### SFP
+</td>
+    <td valign="top">
 
-<p align="center">
-  <img src="media/eval_reg_sfp.png" alt="SFP prediction error" width="70%">
-</p>
+The plot shows the prediction error.
 
 The following table provides the final model performance.
 
@@ -95,7 +104,6 @@ The following table provides the final model performance.
 | dpitch (deg) | 0.799 |
 | dyaw (deg)   | 0.949 |
 
-
-
-
-
+</td>
+  </tr>
+</table>
