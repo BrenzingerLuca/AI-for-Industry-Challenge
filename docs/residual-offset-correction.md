@@ -34,8 +34,6 @@ model is trained to recover that offset from the images alone, so at
 inference time — with no ground truth available — it can estimate the same
 thing from what the cameras see.
 
-## Training data
-
 To focus only on the plug-to-port alignment, a region of interest (ROI) is cropped from each image, as shown below.
 
 <p align="center">
@@ -55,7 +53,28 @@ model estimates it directly from the cameras and folds a correction into the
 approach pose before the spiral search — cheaper to train than to chase
 perfect calibration.
 
-(where the readme is: src/aic/aic_solution/docs/residual-offset-correction.md)
+## Model Architecture
+
+A `SharedViewEncoder` (ResNet18, ImageNet-pretrained, final FC replaced with a
+`Linear(512, 256)` projection) is applied to each of the three 128x128 camera
+crops with the *same* weights — no per-camera encoder. The three resulting
+256-d feature vectors are concatenated and passed through an MLP head
+(`Linear(768, 256) -> ReLU -> Linear(256, 256) -> ReLU -> Linear(256, 6)`) that
+regresses the standardized 6-DoF offset (`dx, dy, dz, droll, dpitch, dyaw`),
+unnormalized back to physical units at inference using the training set's
+mean/std. A diffusion-based alternative head is also implemented in the
+training notebook for comparison, but the plain regressor is what's deployed.
+
+## Training
+
+Trained with MSE loss (Adam, lr `1e-3`, weight decay `1e-4`, batch size 16,
+up to 200 epochs with early stopping on val loss, patience 30). The ResNet18
+backbone is frozen by default — only the projection and MLP head are trained,
+since the dataset is too small to fine-tune a full CNN without overfitting.
+Samples whose true offset is under 2mm get 3x the sampling weight (via a
+`WeightedRandomSampler`), since the model mainly needs to be accurate in the
+small-offset regime it actually operates in at inference. A separate model is
+trained per connector type on a 15%-held-out validation split.
 
 ## Model Evaluation
 
@@ -107,3 +126,5 @@ The following table provides the final model performance.
 </td>
   </tr>
 </table>
+
+
