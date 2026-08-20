@@ -204,7 +204,7 @@ class PlugIn_correct_offset(Policy):
                 'off_quat': [0.1608, -0.167181, 0.69417, -0.6814],
                 'residual_model_path': os.path.join(_CHECKPOINT_DIR, 'regressor_best_sc.pt'),
                 'insertion_offset_z': 0.01,
-                'spiral_stiffness': [600.0, 600.0, 120.0, 300.0, 300.0, 40.0],
+                'spiral_stiffness': [6000.0, 6000.0, 120.0, 300.0, 300.0, 40.0],
                 'spiral_damping': [40.0, 40.0, 15.0, 30.0, 30.0, 30.0],
                 'spiral_steps': 150,
                 'spiral_max_radius': 0.004,
@@ -212,7 +212,7 @@ class PlugIn_correct_offset(Policy):
 
                 # Free-space descent-to-contact primitive (step 3). Not yet
                 # tuned for 'sc' -- copied from 'sfp' as a starting point.
-                'descent_stiffness': [600.0, 600.0, 600.0, 300.0, 300.0, 300.0],
+                'descent_stiffness': [8000.0, 8000.0, 600.0, 300.0, 300.0, 300.0],
                 'descent_damping': [40.0, 40.0, 35.0, 30.0, 30.0, 30.0],
                 'contact_force_threshold_n': 10.0,
                 'press_force_n': 10.0,
